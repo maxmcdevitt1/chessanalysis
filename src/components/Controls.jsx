@@ -33,6 +33,12 @@ const Controls = ({ onUpload, onPrev, onNext, onAnalyze, canAnalyze, isAnalyzing
         }
     };
 
+    // Calculate progress percentage defensively
+    // This addresses the "Cannot read properties of undefined (reading 'total')" error
+    const progressPercent = (progress && progress.total && progress.total > 0) 
+        ? Math.round((progress.current / progress.total) * 100) 
+        : 0;
+
     return (
         <div className="controls-container">
             
@@ -42,7 +48,7 @@ const Controls = ({ onUpload, onPrev, onNext, onAnalyze, canAnalyze, isAnalyzing
                     <>
                         <label className="file-upload-btn">
                             Upload PGN File
-                            <input type="file" accept=".pgn" onChange={handleFile} hidden /> 
+                            <input type="file" accept=".pgn" onChange={handleFile} style={{ display: 'none' }} />
                         </label>
                         <button className="text-btn" onClick={() => setPasteMode(true)}>
                             or Paste Text
@@ -76,7 +82,7 @@ const Controls = ({ onUpload, onPrev, onNext, onAnalyze, canAnalyze, isAnalyzing
                 disabled={!canAnalyze || isAnalyzing}
             >
                 {isAnalyzing 
-                    ? `Analyzing... ${Math.round((progress.current / progress.total) * 100)}%` 
+                    ? `Analyzing... ${progressPercent}%` 
                     : "Run Stockfish Analysis"}
             </button>
         </div>

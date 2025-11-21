@@ -1,87 +1,141 @@
 // src/hooks/useGameState.js
-// Replace the previous file with this content.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-// If the project uses chess.js, ensure it is installed: `npm install chess.js`
-// Import may be 'chess.js' or 'chess.js'. Adjust according to your package version.
 import { Chess } from 'chess.js';
 
 export default function useGameState(initialFen = null) {
-  // Keep a mutable chess engine instance in a ref to avoid re-creating or mutating state directly.
   const chessRef = useRef(null);
-  const [history, setHistory] = useState([]);
-  const [lastMove, setLastMove] = useState(null);
+  const [history, setHistory] = useState([]); // Array of SAN moves
+  const [fenHistory, setFenHistory] = useState(['rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1']); // Array of FEN strings
+  const [currentMoveIndex, setCurrentMoveIndex] = useState(0);
 
-  // initialize chess instance once
+  // Initialize chess instance once
   useEffect(() => {
-    chessRef.current = new Chess(initialFen || undefined);
-    // initialize history from starting position if any
+    // Initialize Chess.js
+    chessRef.current = new Chess(initialFen || undefined); 
     setHistory([]);
-    setLastMove(null);
-
-    return () => {
-      // no special cleanup needed for chess.js, but nullify ref to avoid accidental reuse after unmount
-      chessRef.current = null;
-    };
-    // Only run once per mount. If you want initialFen to reinitialize, remove eslint ignore and add initialFen to deps.
+    setFenHistory([chessRef.current.fen()]);
+    setCurrentMoveIndex(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const makeMove = useCallback((move) => {
-    // move can be a SAN or an object recognized by chess.js, so avoid mutating state directly.
+  // Function to update FEN history and current index
+  const updateStateAfterMove = useCallback((newFen, moveSan) => {
+    setHistory(prev => [...prev, { san: moveSan, color: chessRef.current.turn() === 'b' ? 'w' : 'b' }]);
+    setFenHistory(prev => [...prev, newFen]);
+    setCurrentMoveIndex(prev => prev + 1);
+  }, []);
+
+  // Handler for making a move (used by the Board component)
+  const onMove = useCallback((source, target) => {
     if (!chessRef.current) return false;
-    const result = chessRef.current.move(move);
-    if (result) {
-      // copy the SAN into history immutably
-      setHistory((prev) => [...prev, result.san]);
-      setLastMove(result);
-      return true;
+
+    // Temporarily load the current position to make the move
+    const currentFen = fenHistory[currentMoveIndex];
+    chessRef.current.load(currentFen);
+
+    try {
+        const result = chessRef.current.move({ from: source, to: target, promotion: 'q' }); // Assume queen promotion
+        if (result) {
+            updateStateAfterMove(chessRef.current.fen(), result.san);
+            return true;
+        }
+    } catch (e) {
+        console.warn("Illegal move attempted:", e);
     }
     return false;
-  }, []);
+  }, [fenHistory, currentMoveIndex, updateStateAfterMove]);
 
-  const undo = useCallback(() => {
-    if (!chessRef.current) return null;
-    const undone = chessRef.current.undo();
-    setHistory((prev) => {
-      if (prev.length === 0) return prev;
-      const next = prev.slice(0, -1);
-      return next;
-    });
-    setLastMove(null);
-    return undone;
-  }, []);
+  // Handler for loading a PGN file
+  const loadPgn = useCallback((pgnText) => {
+    if (!chessRef.current) return;
+    
+    // 1. Create a new, fresh engine for loading
+    const tempChess = new Chess();
+    if (tempChess.loadPgn(pgnText)) {
+        // 2. Extract move and FEN history
+        const moves = tempChess.history({ verbose: true });
+        
+        // 3. Reset the engine to the start and record FENs
+        tempChess.reset();
+        const newFenHistory = [tempChess.fen()];
+        const newMoveHistory = [];
+        
+        moves.forEach(move => {
+            tempChess.move(move);
+            newFenHistory.push(tempChess.fen());
+            newMoveHistory.push({ san: move.san, color: move.color });
+        });
+        
+        // 4. Update state to reflect the new game
+        chessRef.current.load(newFenHistory[newFenHistory.length - 1]);
+        setHistory(newMoveHistory);
+        setFenHistory(newFenHistory);
+        setCurrentMoveIndex(newFenHistory.length - 1);
+        console.log(`PGN loaded with ${newMoveHistory.length} moves.`);
 
-  const reset = useCallback((fen) => {
-    if (!chessRef.current) {
-      chessRef.current = new Chess(fen || undefined);
     } else {
-      chessRef.current.load(fen || undefined);
+        console.error("Failed to load PGN.");
     }
-    setHistory([]);
-    setLastMove(null);
   }, []);
 
+  // Handler for navigating the game history
+  const navigate = useCallback((delta) => {
+    setFenHistory(prev => {
+        const newIndex = Math.max(0, Math.min(prev.length - 1, currentMoveIndex + delta));
+        setCurrentMoveIndex(newIndex);
+        return prev;
+    });
+  }, [currentMoveIndex]);
+
+  // Current FEN
   const fen = useMemo(() => {
-    return chessRef.current ? chessRef.current.fen() : null;
-  }, [history]); // recompute FEN when history changes (moves made/undone)
+    return fenHistory[currentMoveIndex] || 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+  }, [fenHistory, currentMoveIndex]);
 
   // Derived convenience values
-  const turn = useMemo(() => {
-    if (!chessRef.current) return null;
-    return chessRef.current.turn();
+  const currentChess = useMemo(() => {
+    // Create a temporary Chess object for getting legal moves/turn color of the current FEN
+    if (fen) {
+        const temp = new Chess(fen);
+        return temp;
+    }
+    return new Chess(); // Default
+  }, [fen]);
+  
+  const possibleMoves = useMemo(() => {
+    return currentChess.moves({ verbose: true }).map(move => ({
+        from: move.from,
+        to: move.to
+    }));
+  }, [currentChess]);
+
+  const turnColor = useMemo(() => {
+    return currentChess.turn() === 'w' ? 'white' : 'black';
+  }, [currentChess]);
+  
+  // Format history for commentary (san and color)
+  const pgnMoves = useMemo(() => {
+    return history.map((h, index) => ({
+        move: index + 1, // 1-based move number
+        san: h.san,
+        color: h.color
+    }));
   }, [history]);
+  
+  // Array of FENs for Stockfish
+  const moveHistoryFens = useMemo(() => fenHistory, [fenHistory]);
+
 
   return {
-    makeMove,
-    undo,
-    reset,
     fen,
-    history,
-    lastMove,
-    turn,
-    // expose internal ref only for advanced uses; avoid mutating it externally
-    _internal: { chessRef },
+    moveHistory: moveHistoryFens, // Array of all FENs
+    pgnMoves, // Array of {move, san, color} objects
+    currentMoveIndex,
+    loadPgn,
+    navigate,
+    onMove,
+    turnColor,
+    possibleMoves // Legal moves for the UI
   };
 }
-

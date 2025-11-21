@@ -1,12 +1,11 @@
 import React, { memo } from 'react';
-import PropTypes from 'prop-types';
 
 // Memoized to avoid rerendering on every engine tick
 const Commentary = memo(({ data }) => {
     if (!data) {
         return (
             <div className="commentary-placeholder">
-                Make a move to see analysis
+                Upload a PGN and navigate a move to see analysis.
             </div>
         );
     }
@@ -29,21 +28,10 @@ const Commentary = memo(({ data }) => {
             <hr />
             <div className="stats">
                 <p>Eval: <strong>{score}</strong></p>
-                <p>Best Line: <strong>{bestMove}</strong></p>
+                <p>Engine Line: <strong>{bestMove}</strong></p>
             </div>
         </div>
     );
 });
-
-Commentary.propTypes = {
-    data: PropTypes.shape({
-        color: PropTypes.string,
-        title: PropTypes.string,
-        classification: PropTypes.string,
-        text: PropTypes.string,
-        score: PropTypes.oneOfType([PropTypes.string, PropTypes.number]),
-        bestMove: PropTypes.string
-    })
-};
 
 export default Commentary;
