@@ -34,12 +34,25 @@ const Piece = ({ type, color }) => {
 function Board(props) {
     const {
         orientation = 'white', // 'white' or 'black'
-        onMove, // function(from, to)
+        onMove, // function(from, to) or UCI string
         fen, // standard FEN string
         movable = { dests: {} }, // { dests: { e2: ['e3', 'e4'] } }
         lastMove = [], // [from, to] of the last move
         arrows = [], // [from, to] of the analysis arrow
+        possibleMoves = [], // Array of { from, to }
+        turnColor = 'white'
     } = props;
+
+    // Build a move map if only possibleMoves/turnColor are provided
+    const derivedMovable = useMemo(() => {
+        if (!possibleMoves.length) return movable;
+        const dests = possibleMoves.reduce((acc, move) => {
+            if (!acc[move.from]) acc[move.from] = [];
+            acc[move.from].push(move.to);
+            return acc;
+        }, {});
+        return { dests, color: turnColor === 'white' ? 'w' : 'b' };
+    }, [movable, possibleMoves, turnColor]);
 
     // Local state for dragging and square selection
     const [selectedSquare, setSelectedSquare] = useState(null);
@@ -86,8 +99,10 @@ function Board(props) {
         if (!onMove) return;
 
         // 1. If a square is already selected
+        const moveTargets = derivedMovable.dests || {};
+
         if (selectedSquare) {
-            const possibleDests = movable.dests[selectedSquare] || [];
+            const possibleDests = moveTargets[selectedSquare] || [];
             
             // a) If the clicked square is a valid destination for the selected piece
             if (possibleDests.includes(square)) {
@@ -95,7 +110,7 @@ function Board(props) {
                 setSelectedSquare(null);
             } 
             // b) If the clicked square contains a piece of the current player (new selection)
-            else if (pieceMap[square] && ((movable.color === 'w' && pieceMap[square] === pieceMap[square].toUpperCase()) || (movable.color === 'b' && pieceMap[square] === pieceMap[square].toLowerCase()))) {
+            else if (pieceMap[square] && ((derivedMovable.color === 'w' && pieceMap[square] === pieceMap[square].toUpperCase()) || (derivedMovable.color === 'b' && pieceMap[square] === pieceMap[square].toLowerCase()))) {
                 setSelectedSquare(square); // Change selection
             }
             // c) Clicked outside of valid move/own piece -> Deselect
@@ -106,11 +121,11 @@ function Board(props) {
         // 2. If no square is selected
         else {
             // Select the square only if it contains a piece of the current player
-            if (pieceMap[square] && ((movable.color === 'w' && pieceMap[square] === pieceMap[square].toUpperCase()) || (movable.color === 'b' && pieceMap[square] === pieceMap[square].toLowerCase()))) {
+            if (pieceMap[square] && ((derivedMovable.color === 'w' && pieceMap[square] === pieceMap[square].toUpperCase()) || (derivedMovable.color === 'b' && pieceMap[square] === pieceMap[square].toLowerCase()))) {
                 setSelectedSquare(square);
             }
         }
-    }, [selectedSquare, onMove, movable.dests, movable.color, pieceMap]);
+    }, [selectedSquare, onMove, derivedMovable.dests, derivedMovable.color, pieceMap]);
 
 
     // --- Rendering Logic ---
@@ -235,6 +250,11 @@ Board.propTypes = {
     }),
     lastMove: PropTypes.arrayOf(PropTypes.string),
     arrows: PropTypes.arrayOf(PropTypes.string),
+    possibleMoves: PropTypes.arrayOf(PropTypes.shape({
+        from: PropTypes.string.isRequired,
+        to: PropTypes.string.isRequired,
+    })),
+    turnColor: PropTypes.oneOf(['white', 'black']),
 };
 
 export default React.memo(Board);

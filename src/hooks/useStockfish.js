@@ -1,182 +1,205 @@
-// src/hooks/useStockfish.js
-// Overwrite the existing file with this content.
-
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 /**
  * useStockfish
- * Lightweight hook to manage a Stockfish web worker with safe lifecycle handling.
  *
- * Exposes:
- *  - send(commandOrObject)
- *  - startAnalysis(fenOrMoves)
- *  - stopAnalysis()
- *  - setOptions({ threads, hash, skill })
- *  - terminate()
- *
- * The hook returns an object { send, startAnalysis, stopAnalysis, setOptions, terminate, lastMessage, status }
+ * Drives a Stockfish web worker to analyze one or more FEN strings. The hook queues
+ * requested positions, waits for the engine to return a `bestmove`, and captures the
+ * latest evaluation line seen during the search.
  */
-
 export default function useStockfish(workerUrl = '/stockfish.worker.js') {
   const workerRef = useRef(null);
-  const mountedRef = useRef(false);
-  const [lastMessage, setLastMessage] = useState(null);
-  const [status, setStatus] = useState('idle'); // idle | running | error
 
-  // initialize the worker
-  useEffect(() => {
-    mountedRef.current = true;
-    try {
-      // prefer explicit path (public folder). Adjust if your build serves worker elsewhere.
-      const w = new Worker(workerUrl);
-      workerRef.current = w;
+  const queueRef = useRef([]);
+  const currentFenRef = useRef(null);
+  const currentEvalRef = useRef(null);
+  const bestMoveRef = useRef(null);
 
-      w.onmessage = (e) => {
-        try {
-          const data = e && e.data;
-          // handle structured messages (our worker uses { type, data } format)
-          if (data && typeof data === 'object' && data.type) {
-            if (data.type === 'engine') {
-              // engine forward
-              setLastMessage((_) => data.data);
-            } else if (data.type === 'error') {
-              setStatus('error');
-              setLastMessage(data);
-            } else {
-              // other informational messages
-              setLastMessage(data);
-            }
-          } else {
-            // fallback: accept string messages
-            setLastMessage(data);
-          }
-        } catch (err) {
-          // avoid crash on malformed messages
-          console.error('useStockfish: malformed worker message', err);
-          setStatus('error');
-          setLastMessage({ type: 'error', message: String(err) });
-        }
-      };
+  const analyzedDataRef = useRef({});
+  const [analyzedData, setAnalyzedData] = useState({});
 
-      w.onerror = (err) => {
-        console.error('Stockfish worker error', err);
-        setStatus('error');
-        setLastMessage({ type: 'error', message: err && err.message ? err.message : String(err) });
-      };
+  const isAnalyzingRef = useRef(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
-      setStatus('idle');
-    } catch (err) {
-      console.error('Failed to create stockfish worker', err);
-      setStatus('error');
-      setLastMessage({ type: 'error', message: err && err.message });
-    }
+  const totalRef = useRef(0);
+  const completedRef = useRef(0);
+  const [progress, setProgress] = useState({ current: 0, total: 0 });
 
-    return () => {
-      mountedRef.current = false;
-      if (workerRef.current) {
-        try {
-          // ask worker to terminate gracefully if it supports that message shape
-          try {
-            workerRef.current.postMessage({ action: 'terminate' });
-          } catch (e) { /* ignore */ }
-          workerRef.current.terminate();
-        } catch (err) {
-          // ignore termination errors
-        } finally {
-          workerRef.current = null;
-        }
-      }
-    };
-    // NOTE: workerUrl is intentionally omitted from deps so hook acts like singleton per mount.
-    // If you change workerUrl dynamically, you should re-initialize by remounting the hook consumer.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  /**
+   * Helper: safely post a message to the worker.
+   */
+  const send = useCallback((cmd) => {
+    if (!workerRef.current) return;
+    workerRef.current.postMessage(cmd);
   }, []);
 
-  const send = useCallback((cmd) => {
-    if (!workerRef.current) {
-      console.warn('useStockfish: send called but worker is not initialized');
+  /**
+   * Parse a Stockfish info line and cache the latest evaluation and principal variation.
+   */
+  const handleInfoLine = useCallback((line) => {
+    // score cp <value>
+    const scoreMatch = line.match(/score\s+(cp|mate)\s+(-?\d+)/);
+    if (scoreMatch) {
+      const [, type, rawValue] = scoreMatch;
+      const value = parseInt(rawValue, 10);
+      currentEvalRef.current = type === 'mate' ? { type: 'mate', value } : { type: 'cp', value };
+    }
+
+    // Grab the first PV move as the suggested move while searching
+    const pvMatch = line.match(/\spv\s+([a-h][1-8][a-h][1-8][qrbn]?)/);
+    if (pvMatch && !bestMoveRef.current) {
+      bestMoveRef.current = pvMatch[1];
+    }
+  }, []);
+
+  /**
+   * Fire analysis for the next FEN in the queue.
+   */
+  const startNext = useCallback(() => {
+    if (queueRef.current.length === 0 || !workerRef.current) {
+      isAnalyzingRef.current = false;
+      setIsAnalyzing(false);
+      setProgress({ current: completedRef.current, total: totalRef.current });
       return;
     }
-    try {
-      workerRef.current.postMessage(cmd);
-    } catch (err) {
-      console.error('useStockfish send failed', err);
-      setStatus('error');
-      setLastMessage({ type: 'error', message: err && err.message });
-    }
-  }, []);
 
-  const setOptions = useCallback((opts = {}) => {
-    // Normalize options and send supported setoption commands
-    if (!workerRef.current) return;
-    const { threads, hash, skill } = opts;
-    if (typeof threads === 'number') {
-      send(`setoption name Threads value ${Math.max(1, Math.floor(threads))}`);
-    }
-    if (typeof hash === 'number') {
-      send(`setoption name Hash value ${Math.max(1, Math.floor(hash))}`);
-    }
-    if (typeof skill === 'number') {
-      send(`setoption name Skill Level value ${Math.max(0, Math.min(20, Math.floor(skill)))}`);
-    }
+    isAnalyzingRef.current = true;
+    setIsAnalyzing(true);
+
+    const fen = queueRef.current.shift();
+    currentFenRef.current = fen;
+    currentEvalRef.current = null;
+    bestMoveRef.current = null;
+
+    // Tell Stockfish to analyze this position to a reasonable depth
+    send('stop');
+    send('ucinewgame');
+    send(`position fen ${fen}`);
+    send('go depth 15');
   }, [send]);
 
-  const startAnalysis = useCallback((positionOrFen) => {
-    if (!workerRef.current) return;
-    // two forms: direct fen or "position startpos moves e2e4 e7e5"
-    try {
-      setStatus('running');
-      if (typeof positionOrFen === 'string') {
-        if (positionOrFen.toLowerCase().startsWith('position') || positionOrFen.includes(' ')) {
-          // assume full uci position command
-          send(positionOrFen);
-        } else {
-          // assume fen
-          send(`position fen ${positionOrFen}`);
-        }
-        // kick off search
-        send('go infinite');
+  /**
+   * When the engine reports a bestmove, store the analysis result and continue with the queue.
+   */
+  const finalizeCurrent = useCallback(() => {
+    const fen = currentFenRef.current;
+    if (!fen) return;
+
+    const evalObj = currentEvalRef.current || { type: 'cp', value: 0 };
+    const bestMove = bestMoveRef.current || '';
+
+    setAnalyzedData((prev) => {
+      const next = { ...prev, [fen]: { eval: evalObj, bestMove } };
+      analyzedDataRef.current = next;
+      return next;
+    });
+
+    completedRef.current += 1;
+    setProgress({ current: completedRef.current, total: totalRef.current });
+
+    // Reset engine state and start the next queued item
+    currentFenRef.current = null;
+    currentEvalRef.current = null;
+    bestMoveRef.current = null;
+
+    // Delay kicking off the next position to give the worker a tick to breathe
+    setTimeout(() => {
+      if (queueRef.current.length === 0) {
+        isAnalyzingRef.current = false;
+        setIsAnalyzing(false);
+        return;
       }
-    } catch (err) {
-      console.error('startAnalysis failed', err);
-      setStatus('error');
-      setLastMessage({ type: 'error', message: err && err.message });
-    }
-  }, [send]);
+      startNext();
+    }, 0);
+  }, [startNext]);
 
+  /**
+   * Handle worker messages and route them to the correct parser.
+   */
+  const handleWorkerMessage = useCallback((event) => {
+    const payload = event?.data;
+    const line = typeof payload === 'string' ? payload : payload?.data;
+    if (!line || typeof line !== 'string') return;
+
+    if (line.startsWith('info')) {
+      handleInfoLine(line);
+    }
+
+    if (line.startsWith('bestmove')) {
+      const match = line.match(/bestmove\s+(\S+)/);
+      if (match) {
+        bestMoveRef.current = match[1];
+      }
+      finalizeCurrent();
+    }
+  }, [finalizeCurrent, handleInfoLine]);
+
+  /**
+   * Initialize and tear down the Stockfish worker.
+   */
+  useEffect(() => {
+    const worker = new Worker(workerUrl);
+    workerRef.current = worker;
+
+    worker.onmessage = handleWorkerMessage;
+    worker.postMessage('uci');
+
+    return () => {
+      if (workerRef.current) {
+        try {
+          workerRef.current.postMessage({ action: 'terminate' });
+        } catch (e) {
+          // ignore
+        }
+        workerRef.current.terminate();
+        workerRef.current = null;
+      }
+    };
+  }, [handleWorkerMessage, workerUrl]);
+
+  /**
+   * Public API: queue one or more FEN strings for analysis.
+   */
+  const startAnalysis = useCallback((fenList) => {
+    const fens = Array.isArray(fenList) ? fenList : [fenList];
+    const unique = fens.filter((fen) => fen && !analyzedDataRef.current[fen]);
+    if (unique.length === 0) return;
+
+    const startingFresh = !isAnalyzingRef.current && queueRef.current.length === 0;
+
+    queueRef.current.push(...unique);
+
+    if (startingFresh) {
+      completedRef.current = 0;
+      totalRef.current = queueRef.current.length;
+    } else {
+      totalRef.current = completedRef.current + queueRef.current.length;
+    }
+    setProgress({ current: completedRef.current, total: totalRef.current });
+
+    if (!isAnalyzingRef.current) {
+      startNext();
+    }
+  }, [startNext]);
+
+  /**
+   * Public API: stop any ongoing analysis and clear the queue.
+   */
   const stopAnalysis = useCallback(() => {
-    if (!workerRef.current) return;
-    try {
-      send('stop');
-      setStatus('idle');
-    } catch (err) {
-      console.error('stopAnalysis failed', err);
-      setStatus('error');
-      setLastMessage({ type: 'error', message: err && err.message });
-    }
+    queueRef.current = [];
+    send('stop');
+    isAnalyzingRef.current = false;
+    setIsAnalyzing(false);
+    totalRef.current = completedRef.current;
+    setProgress({ current: completedRef.current, total: totalRef.current });
   }, [send]);
-
-  const terminate = useCallback(() => {
-    if (!workerRef.current) return;
-    try {
-      try { workerRef.current.postMessage({ action: 'terminate' }); } catch (_) {}
-      workerRef.current.terminate();
-    } catch (err) {
-      console.error('terminate failed', err);
-    } finally {
-      workerRef.current = null;
-      setStatus('idle');
-    }
-  }, []);
 
   return {
-    send,
+    analyzedData,
+    isAnalyzing,
+    progress,
     startAnalysis,
     stopAnalysis,
-    setOptions,
-    terminate,
-    lastMessage,
-    status,
   };
 }
 

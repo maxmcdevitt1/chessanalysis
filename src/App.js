@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
-import  useGameState  from './hooks/useGameState';
-import  useStockfish  from './hooks/useStockfish';
+import useGameState from './hooks/useGameState';
+import useStockfish from './hooks/useStockfish';
 import { generateCommentary } from './utils/analysis';
 
 import Board from './components/Board';
@@ -26,27 +26,28 @@ function App() {
   // 2. Load Engine Logic
   const { analyzedData, isAnalyzing, progress, startAnalysis } = useStockfish();
 
-  // 3. Analysis Auto-Queue FIX (The crucial block)
+  // 3. Analysis Auto-Queue: ensure the current position gets queued quickly
   useEffect(() => {
-      // If the FEN changes (manual move/navigation) and we don't have analysis data 
-      // for it, queue it for Stockfish analysis immediately, provided the engine isn't busy.
       if (fen && !analyzedData[fen] && !isAnalyzing) {
-          console.log(`Auto-queuing new position: ${fen}`);
-          // startAnalysis expects an array of FENs
           startAnalysis([fen]);
       }
-      // Dependency array includes 'fen' to re-run on every move.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [fen]); 
+  }, [analyzedData, fen, isAnalyzing, startAnalysis]);
 
-  // 4. Generate Commentary & Visuals
+  // 4. Ensure full-game analysis when a PGN is loaded
+  useEffect(() => {
+      if (moveHistory.length > 0) {
+          startAnalysis(moveHistory);
+      }
+  }, [moveHistory, startAnalysis]);
+
+  // 5. Generate Commentary & Visuals
   const commentary = generateCommentary(currentMoveIndex, moveHistory, pgnMoves, analyzedData);
   const arrows = commentary?.arrow || [];
   
   // Convert score string (e.g., "1.50") back to centipawns (150) for the EvalBar
   const currentScore = commentary ? parseFloat(commentary.score) * 100 : 0;
 
-  // 5. Handlers
+  // 6. Handlers
   const handleUpload = (pgnText) => {
     console.log("--- PGN Upload Started ---");
     console.log("PGN content received (first 200 chars):\n", pgnText.substring(0, 200));
