@@ -30,12 +30,21 @@ export default function useGameState(initialFen = null) {
   const onMove = useCallback((source, target) => {
     if (!chessRef.current) return false;
 
+    let from = source;
+    let to = target;
+
+    // Allow UCI string input (e.g., e2e4)
+    if (typeof target === 'undefined' && typeof source === 'string' && source.length >= 4) {
+        from = source.substring(0, 2);
+        to = source.substring(2, 4);
+    }
+
     // Temporarily load the current position to make the move
     const currentFen = fenHistory[currentMoveIndex];
     chessRef.current.load(currentFen);
 
     try {
-        const result = chessRef.current.move({ from: source, to: target, promotion: 'q' }); // Assume queen promotion
+        const result = chessRef.current.move({ from, to, promotion: 'q' }); // Assume queen promotion
         if (result) {
             updateStateAfterMove(chessRef.current.fen(), result.san);
             return true;
