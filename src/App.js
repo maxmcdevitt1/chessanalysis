@@ -1,6 +1,6 @@
 import React, { useEffect } from 'react';
-import { useGameState } from './hooks/useGameState';
-import { useStockfish } from './hooks/useStockfish';
+import  useGameState  from './hooks/useGameState';
+import  useStockfish  from './hooks/useStockfish';
 import { generateCommentary } from './utils/analysis';
 
 import Board from './components/Board';
