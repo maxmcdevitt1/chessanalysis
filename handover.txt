@@ -1,0 +1,310 @@
+Chess Analysis – Handover Notes
+TL;DR
+
+Repo layout (frontend): ~/chess/v1/webui (Vite + React + TypeScript)
+
+Backend service: Node/Express at http://localhost:8788, systemd unit: chess-engine.service
+
+Engine: Stockfish (CLI). Ensure service user can resolve it (PATH or STOCKFISH_BIN).
+
+Openings book: webui/public/eco.json (served as /eco.json); matching is UCI-based
+
+Core UX: play vs engine (auto-reply), load PGN, analyze (post-game only), book tagging, best-move arrow, per-move tags, accuracy, Elo estimate
+
+What works today
+Backend
+
+Service name: chess-engine.service
+
+Listening: :8788
+
+Endpoints used by the UI:
+
+GET /health → {"ok":true}
+
+POST /api/engine/analyze with body { fen, movetimeMs, multiPv }
+
+Stockfish path: Either on PATH for User=chess or set via /etc/chess-engine.env
+If needed we symlinked: /usr/local/bin/stockfish -> /usr/games/stockfish
+
+Frontend
+
+Entry: webui/src/App.tsx
+
+Key components:
+
+BoardPane.tsx – chessboard, eval bar, best-move arrow overlay, on-board symbol support
+
+SidebarPane.tsx – PGN paste/upload, Analyze PGN, progress, Game Review (accuracy, avg CPL, Elo), moves table, book buttons
+
+Openings:
+
+webui/src/openings/matcher.ts loads /eco.json, converts each pgn to UCI with chess.js (sloppy: true), finds longest UCI prefix, offers nextBookMoves, and returns deviation index for Book tagging.
+
+Auto-reply (engine moves once)
+
+Replaced older rAF/effect race with maybeAutoReply(), which:
+
+Fires only after a user move
+
+Ensures it’s engine’s turn
+
+Ensures only once per ply with lastAutoReplyAtPly.current
+
+This eliminated the “engine moves twice” bug.
+
+Accuracy & Elo
+
+Accuracy (per side): Lichess-style ΔWin% loss vs best (book moves ignored)
+
+Win probability from WHITE-POV centipawns: wp = 1 / (1 + e^(-(cp/130)))
+
+Mover’s loss = max(0, wpBestMover - wpAfterMover)
+
+Accuracy% = 100 * (1 - averageLoss)
+
+Elo estimate (single number) from accuracy (Chess.com-style):
+
+Elo = round(32.82 * ln(acc/(100-acc)) + 1850)   // acc in 1..99
+
+
+Avg CPL is also computed and shown (excluding Book).
+
+Tagging
+
+Book: Tag all moves before deviation as 'Book'.
+
+Non-book moves use ΔWin% loss thresholds for human-like tagging:
+
+<0.5% → Best
+
+<2% → Good
+
+<10% → Mistake
+
+≥10% → Blunder
+
+Navigation
+
+Keyboard: ← / → / Home / End navigates via a single rebuildTo(n) (authoritative), which rebuilds a fresh Chess() position to n plies and updates FEN → board always follows the row selection.
+
+Move list: clicking a row calls onRebuildTo(rowIndex+1).
+
+Key files & responsibilities
+webui/src/App.tsx (authoritative state/logic)
+
+Keeps gameRef (Chess), fen, movesUci, ply
+
+Orchestrates analysis:
+
+For each ply, calls backend to analyze before and after
+
+Computes best, cpBefore/cpAfter (WHITE POV), cpl (mover POV), tag
+
+Computes accuracy, avg CPL, Elo
+
+Auto-reply guard (maybeAutoReply) prevents double engine moves
+
+Debounced position eval (lightweight, separate from analysis) for eval bar
+
+Keyboard navigation → always through rebuildTo() (which blocks eval temporarily)
+
+Important sign conventions inside analyzePgn():
+
+bestCp: eval before the move = mover POV (as returned by engine at side-to-move)
+
+afterCpRaw: eval after the move = opponent POV → flip (-afterCpRaw) to get mover POV
+
+WHITE POV copies for UI:
+
+cpBeforeWhite = mover==='w' ? bestCp : -bestCp
+
+cpAfterWhite = mover==='w' ? -afterCpRaw : afterCpRaw (because afterCpRaw is opp POV)
+
+CPL (mover POV): cpl = max(0, bestForMover - afterForMover)
+
+webui/src/openings/matcher.ts
+
+initOpenings('/eco.json') – must be reachable from Vite under /eco.json (file is in webui/public/eco.json)
+
+UCI-based book:
+
+Precompute each line UCI with chess.js (sloppy parser tolerates comments/variations)
+
+findOpeningByMoves(uciSeq) → returns {eco, name, ply} with longest prefix
+
+nextBookMoves(uciSeq, max) → unique UCI next moves from all covering lines
+
+deviationIndex(uciSeq) → integer k = length of longest book prefix
+
+webui/src/SidebarPane.tsx
+
+Larger, readable fonts/buttons
+
+PGN: paste textarea + file upload (explicit Load PGN; no auto-analyze)
+
+Game Review: White/Black accuracy, Avg CPL, Elo
+
+Book: shows nextBookMoves buttons (UCI under the hood; can display SAN if desired)
+
+Moves table: click to jump (calls onRebuildTo), colored tags (Book/Best/Good/Mistake/Blunder)
+
+webui/src/BoardPane.tsx
+
+Receives fen, bestArrow, optional currentEval (for on-board “!” or “??” symbols on last move’s destination tile)
+
+Renders tall eval bar beside the board
+
+Exposes onUserDrop, onUserClickMove, onEngineMove, etc.
+
+How to run locally
+Backend (service)
+# health
+curl -s http://localhost:8788/health
+
+# simple analyze
+curl -s -X POST http://localhost:8788/api/engine/analyze \
+  -H 'Content-Type: application/json' \
+  -d '{"fen":"startpos","movetimeMs":600,"multiPv":1}' | jq .
+
+
+Service control
+
+sudo systemctl status chess-engine --no-pager
+sudo systemctl restart chess-engine
+journalctl -u chess-engine -f -o short-iso
+
+
+If Stockfish can’t be found by User=chess, either:
+
+Put /usr/games in unit PATH, or
+
+Set STOCKFISH_BIN=/usr/games/stockfish in /etc/chess-engine.env, or
+
+Symlink to /usr/local/bin/stockfish
+
+Frontend (dev)
+cd ~/chess/v1/webui
+export VITE_ENGINE_BASE=http://localhost:8788
+npm run dev
+# open http://localhost:5173
+
+Logging
+
+Backend (systemd):
+journalctl -u chess-engine -f -o short-iso | tee -a ~/logs/chess-engine-$(date +%F).log
+
+Frontend (Vite):
+npm run dev 2>&1 | tee -a ~/logs/webui-dev-$(date +%F).log
+
+Common pitfalls & fixes
+
+Openings don’t load: Ensure webui/public/eco.json exists and is reachable at /eco.json. Check DevTools → Network.
+
+All moves tagged "Mistake": This was due to old CPL-only thresholds. We now use ΔWin% thresholds. Verify analyzePgn() uses tagFromLoss(loss) and not the old function.
+
+Book tags missing: Ensure await initOpenings('/eco.json') is called before analysis; bookUntil = deviationIndex(movesUci) with a fallback to openingAt if needed.
+
+Auto-reply does two moves: Fixed by using maybeAutoReply() and lastAutoReplyAtPly. Ensure no leftover effect/rAF path triggers engine move elsewhere.
+
+Board not following on ←/→: Only change ply via rebuildTo(n). We attach global key handlers (capture) and call rebuildTo() so gameRef + fen stay in sync.
+
+Important formulas & thresholds (so successors don’t have to hunt)
+Win probability (WHITE POV) from centipawns
+wp = 1 / (1 + exp(-(clamp(cp, -1000, 1000) / 130)))
+
+ΔWin% loss for mover (used for both accuracy and tags)
+
+Convert cpBeforeWhite, cpAfterWhite to win prob for mover (flip if mover is Black).
+
+loss = max(0, wpBestMover - wpAfterMover)
+
+Accuracy (%), per side
+accuracy = 100 * (1 - average(loss for side))
+
+Elo estimate from accuracy (Chess.com-style)
+Elo = round(32.82 * ln(acc/(100-acc)) + 1850), acc in [1..99]
+
+Tag thresholds (ΔWin% loss)
+
+<0.5% → Best
+
+<2% → Good
+
+<10% → Mistake
+
+≥10% → Blunder
+
+(Book moves tagged 'Book' up to deviation index)
+
+Nice-to-haves queued up (next steps)
+
+On-board symbols: render green “!” for Best and red “??” for Blunder on the last move destination (BoardPane overlay; we already pass currentEval).
+
+Elo bands: If desired, show Chess.com-style band (e.g., 1600–1800) instead of a single number (we already did the single number).
+
+Coach commentary (local only): Optional – use Ollama (e.g., mistral:7b-instruct) to generate one sentence per move and a short game summary. Vite env: VITE_OLLAMA_URL, VITE_OLLAMA_MODEL. Keep it post-game only to avoid lag.
+
+UI polishing:
+
+Move list height responsive; board auto-resizes 420–600px range.
+
+Larger buttons/typography in sidebar.
+
+Highlight active move row; keep it in view while browsing.
+
+Pseudocode checkpoints (so they can verify quickly)
+
+Auto-reply guard
+
+async function maybeAutoReply() {
+  if (!autoReply || analyzing || suspendEval || engineBusy) return;
+  const engineSide = userSide === 'w' ? 'b' : 'w';
+  if (gameRef.current.turn() !== engineSide) return;
+  if (lastAutoReplyAtPly.current === ply) return;
+  lastAutoReplyAtPly.current = ply;
+  setSuspendEval(true);
+  try { await engineMove(); } finally { setSuspendEval(false); }
+}
+
+
+Rebuild navigation
+
+function rebuildTo(n:number) {
+  setSuspendEval(true);
+  lastAutoReplyAtPly.current = -1;
+  const g = new Chess();
+  for (let i = 0; i < Math.min(n, movesUci.length); i++) safeMove(g, movesUci[i]);
+  gameRef.current = g;
+  setPly(n);
+  setFen(g.fen());
+  setTimeout(() => setSuspendEval(false), 0);
+}
+
+
+Analysis (sign hygiene)
+
+// before
+bestCp // mover POV (side-to-move eval)
+best = before.bestMove
+
+// after
+afterCpRaw // opponent POV
+afterForMover = -afterCpRaw
+
+// white POV copies for UI
+cpBeforeWhite = mover==='w' ? bestCp      : -bestCp
+cpAfterWhite  = mover==='w' ? -afterCpRaw :  afterCpRaw
+
+// CPL (mover POV)
+cpl = max(0, (bestCp) - (afterForMover))
+
+Contact points / expectations for successor
+
+If anything drifts (e.g., “all moves tagged Mistake” or “Book never appears”), the first place to check is analyzePgn() sign usage and that initOpenings('/eco.json') is invoked before analysis.
+
+Performance-sensitive areas: avoid spamming eval calls; we use a 120ms debounce and suspendEval while engine is moving or we’re rebuilding positions.
+
+Keep backend simple: single route /api/engine/analyze, movetimeMs tunable; multiPV typically 1–3.
+
+That’s everything needed to work efficiently without ping-ponging for context. If they need the current files, ask for: App.tsx, BoardPane.tsx, SidebarPane.tsx, openings/matcher.ts, and confirm public/eco.json is present.
