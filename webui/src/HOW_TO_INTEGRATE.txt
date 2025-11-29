@@ -1,0 +1,48 @@
+Performance Pack v1 – How to integrate
+======================================
+
+Files included
+--------------
+- webui/src/perf/useLatest.ts
+- webui/src/perf/useDebouncedEffect.ts
+- webui/src/perf/useRafThrottle.ts
+- webui/src/engine/EngineQueue.ts
+
+What this does
+--------------
+1) Debounces live-eval calls when `ply/fen` changes (prevents burst requests).
+2) Cancels/ignores stale engine responses so only the latest result updates state.
+3) Throttles resize-driven updates to the board/sparkline to a single rAF.
+4) Small hook utilities you can reuse elsewhere.
+
+Suggested App.tsx changes (minimal)
+-----------------------------------
+import { useDebouncedEffect } from './perf/useDebouncedEffect';
+import { useLatest } from './perf/useLatest';
+import { createEngineQueue } from './engine/EngineQueue';
+// assume you already have: analyzeFen(fen, { movetimeMs, multiPv })
+
+const engine = useMemo(() => createEngineQueue(analyzeFen), [analyzeFen]);
+const latestFen = useLatest(fen);
+const latestPly = useLatest(ply);
+
+// 1) Debounced live eval when user navigates (only if not analyzing a full PGN)
+useDebouncedEffect(() => {
+  if (analyzing) return;
+  const f = latestFen.current;
+  // choose a short movetime for UI bar
+  engine.evalQuick({ fen: f, movetimeMs: 120, multiPv: 1 })
+    .then(res => setEvalFromEngine(res))  // your existing setter
+    .catch(() => {/* ignore stale */});
+}, [fen, ply], 160);
+
+// 2) Cancel any inflight eval when we jump hard (e.g., load PGN/new game)
+useEffect(() => { engine.cancelAll(); }, [gameId]); // or when you clear state
+
+// 3) In any window resize handler you have, wrap the setter with rAF throttle:
+import { useRafThrottle } from './perf/useRafThrottle';
+const onResize = useRafThrottle(() => setViewportSize(getSize()));
+useEffect(() => {
+  window.addEventListener('resize', onResize);
+  return () => window.removeEventListener('resize', onResize);
+}, [onResize]);

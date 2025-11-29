@@ -1,0 +1,15 @@
+Interactive Eval Graph – How to wire
+
+1) Replace your current `webui/src/EvalSparkline.tsx` with the one in this folder.
+2) In `BoardPane.tsx`, update the sparkline render to pass `currentIndex`, `onClickIndex` and (optionally) `onHoverIndexChange`:
+
+Example:
+  <EvalSparkline
+    series={evalSeries}
+    height={96}
+    currentIndex={Math.max(0, ply - 1)}
+    onHoverIndexChange={(i) => {/* optional preview */}}
+    onClickIndex={(i) => onRebuildTo(i + 1)}
+  />
+
+That’s it — hover shows a hairline + tooltip, and clicking a point jumps to that ply.

@@ -1,0 +1,37 @@
+appId: com.maxmcdevitt.chessanalysis
+productName: Chess Analysis
+directories:
+  output: dist-electron
+
+files:
+  - electron/**          # keep
+  - webui/dist/**        # keep
+  - assets/**            # <-- add: include icons in app
+  - package.json
+asar: true
+
+artifactName: chessanalysis_${version}_${arch}.${ext}
+
+extraResources:
+  - from: electron/bin
+    to: bin
+    filter: ["**/*"]
+  - from: assets           # <-- add: copy assets/ into app's resources
+    to: assets
+
+linux:
+  target:
+    - deb
+  icon: assets/icon.png    # <-- add: Linux icon
+  category: Game
+  maintainer: "Max McDevitt <maxmcdevitt@icloud.com>"
+  synopsis: "Offline chess analysis with Stockfish"
+  description: "A desktop app for analyzing chess positions and PGNs locally using the native Stockfish engine. No internet required."
+
+win:
+  icon: assets/icon.ico    # <-- add: Windows icon
+
+mac:
+  icon: assets/icon.icns   # <-- add: macOS icon
+  category: public.app-category.games
+

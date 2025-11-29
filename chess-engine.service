@@ -1,0 +1,22 @@
+[Unit]
+Description=Chess Engine API (local Stockfish/Lc0)
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/chess-engine.env
+WorkingDirectory=/opt/chess-analysis/backend
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=2
+User=chess
+Group=chess
+
+# Hardening (tune as needed)
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
