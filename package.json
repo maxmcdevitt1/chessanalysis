@@ -1,0 +1,36 @@
+{
+  "name": "chessanalysis",
+  "version": "0.2.0",
+  "description": "Offline chess analysis with native Stockfish (Electron + React)",
+  "private": true,
+  "main": "electron/main.js",
+  "type": "commonjs",
+  "homepage": "https://github.com/maxmcdevitt1/chessanalysis",
+  "author": {
+    "name": "Max McDevitt",
+    "email": "maxmcdevitt@icloud.com"
+  },
+  "license": "MIT",
+  "scripts": {
+    "dev:ui": "npm --prefix webui run dev",
+    "dev:app": "wait-on tcp:5173 && ELECTRON_START_URL=http://localhost:5173 electron --no-sandbox .",
+    "dev": "run-p dev:ui dev:app",
+    "build:ui": "npm --prefix webui run build",
+    "start": "electron .",
+    "dist": "npm run build:ui && electron-builder -c electron-builder.yml",
+    "postinstall": "npm --prefix webui install"
+  },
+  "devDependencies": {
+    "chess.js": "^1.4.0",
+    "cross-env": "^7.0.3",
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3",
+    "npm-run-all": "^4.1.5",
+    "wait-on": "^9.0.3"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "react-chessboard": "^5.8.6"
+  }
+}

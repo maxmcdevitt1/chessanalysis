@@ -1,0 +1,996 @@
+// webui/src/App.tsx
+import { summarizeGame, accuracyFromAvgCpl, cpLossForMoveSideAware, tallyMoveQuality } from './ScoreHelpers';
+import { useCallback, useEffect, useMemo as useM, useRef, useState } from 'react';
+import { generateCoachNotes } from './CommentaryServiceOllama';
+import { analyzeFen, moveWeak, getCapabilities, setStrength, reviewFast } from './bridge';
+import { Chess } from './chess-compat';
+import type { Square } from './chess-compat';
+import type { CoachNote } from './useCoach';
+
+// Switch opening detection to the compiled book (opening-book.json)
+import { bookMaskFromMoves, bookDepthFromMask, openingLabelAtMask } from './utils/openingBook';
+import { nextBookMoves } from './openings/matcher';
+import BoardPane from './BoardPane';
+import SidebarPane from './SidebarPane';
+import { getNumber, setNumber } from './persist';
+import KeyboardNav from './KeyboardNav';
+
+// sanity: ensure shim is providing a constructor (remove later if noisy)
+// @ts-ignore
+console.log('[chess-compat] typeof Chess =', typeof Chess, 'has loadPgn?', !!(Chess?.prototype?.loadPgn));
+
+export type MoveEval = {
+  index: number;
+  moveNo: number;
+  side: 'White' | 'Black';
+  san: string;
+  uci: string;
+  best?: string | null;
+  cpBefore?: number | null; // white POV
+  cpAfter?: number | null;  // white POV
+  bestCpBefore?: number | null; // mover POV
+  mateAfter?: number | null;
+  cpl?: number | null;
+  tag?: 'Genius' | 'Best' | 'Good' | 'Mistake' | 'Blunder' | 'Book';
+  symbol?: '!!' | '!' | '!? ' | '?' | '??' | '';
+  fenBefore: string;
+  fenAfter: string;
+};
+
+export type BadgeTag = MoveEval['tag'] | 'Book';
+
+const ENGINE_STRENGTH_KEY = 'engineStrength';
+const SHOW_EVAL_GRAPH_KEY = 'showEvalGraph';
+
+/* ------------------------------- helpers --------------------------------- */
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('timeout')), ms);
+    const clear = () => { try { clearTimeout(timer); } catch {} };
+    p.then(v => { clear(); resolve(v); }, e => { clear(); reject(e); });
+  });
+}
+
+function uciToMove(uci: string) {
+  const from = uci.slice(0, 2) as Square;
+  const to = uci.slice(2, 4) as Square;
+  const promotion = (uci[4] as any) || undefined;
+  return { from, to, promotion };
+}
+
+function safeMove(g: any, uci: string): any {
+  try {
+    const obj = uciToMove(uci) as any;
+    return (Chess as any).prototype.move.call(g, obj);
+  } catch {
+    return null;
+  }
+}
+
+// auto-queen helper
+function withAutoQueen(uci: string, game: Chess): string {
+  const from = uci.slice(0, 2) as Square;
+  const to = uci.slice(2, 4) as Square;
+  const p = game.get(from);
+  if (!p || p.type !== 'p') return uci;
+  if ((p.color === 'w' && to[1] === '8') || (p.color === 'b' && to[1] === '1')) {
+    if (uci.length === 4) return uci + 'q';
+  }
+  return uci;
+}
+
+// last CP from infos (supports both {type:'cp',score} and {cp})
+function lastCp(infos?: any[]): number | null {
+  if (!infos?.length) return null;
+  for (let i = infos.length - 1; i >= 0; i--) {
+    const it = infos[i];
+    if (typeof it?.cp === 'number') return it.cp;
+    if (it?.type === 'cp' && Number.isFinite(Number(it.score))) {
+      return Number(it.score);
+    }
+  }
+  return null;
+}
+
+/* ----- Strength/Elo mapping (consistent across eval + replies) ----- */
+
+// Map UI strength 1..20 → display Elo 400..1800
+function uiEloFromStrength(n: number) {
+  const s = Math.max(1, Math.min(20, n));
+  return Math.round(400 + (s - 1) * ((2500- 400) / 19));
+}
+
+// Reply movetime: 400→200ms ... 1800→1600ms (linear, clear and predictable)
+function eloToMovetimeMs(elo: number) {
+  const e = Math.max(400, Math.min(2500, elo));
+  return Math.round(200 + (e - 400) * 1.0);
+}
+
+// Live-eval movetime: ~30% of reply time, clamped to 120..600ms
+function eloToEvalMovetimeMs(elo: number) {
+  const base = Math.round(eloToMovetimeMs(elo) * 0.30);
+  return Math.max(120, Math.min(600, base));
+}
+
+// Low-Elo blunder probability (adds human-like mistakes)
+function blunderProbability(uiElo: number) {
+  if (uiElo <= 500) return 0.30;
+  if (uiElo <= 800) return 0.20;
+  if (uiElo <= 1200) return 0.08;
+  if (uiElo <= 1400) return 0.05;
+  return 0.02;
+}
+
+function pickRandomLegalUci(fen: string): string | null {
+  try {
+    const g = new Chess(fen);
+    const legals = g.moves({ verbose: true }) as any[];
+    if (!legals.length) return null;
+    const rnd = legals[Math.floor(Math.random() * legals.length)];
+    return `${rnd.from}${rnd.to}${rnd.promotion || ''}`;
+  } catch { return null; }
+}
+
+function pickNotBestLegalUci(fen: string, best: string | undefined): string | null {
+  try {
+    const g = new Chess(fen);
+    const legals = g.moves({ verbose: true }) as any[];
+    const pool = legals
+      .map(m => `${m.from}${m.to}${m.promotion || ''}`)
+      .filter(u => u.slice(0,4).toLowerCase() !== (best || '').slice(0,4).toLowerCase());
+    if (!pool.length) return null;
+    return pool[Math.floor(Math.random() * pool.length)];
+  } catch { return null; }
+}
+
+/* ------------------------------ engine gate ------------------------------ */
+
+const ENGINE_READY: Promise<void> = (async () => {
+  try {
+    await getCapabilities();
+    const savedElo = Number(localStorage.getItem('engineElo') || '1000');
+    if (Number.isFinite(savedElo)) await setStrength(savedElo);
+  } catch {}
+})();
+
+async function analyzeFenSafe(fen: string, opts: any) {
+  await ENGINE_READY;
+  return analyzeFen(fen, opts);
+}
+async function moveWeakSafe(fen: string, opts: any) {
+  await ENGINE_READY;
+  return moveWeak(fen, opts);
+}
+
+/* ---------------------------- book move helpers -------------------------- */
+
+function sanListToUciFromPosition(
+  sans: string[],
+  startPly: number,
+  movesUci: string[]
+): string[] {
+  const g = new Chess();
+  for (let k = 0; k < startPly && k < movesUci.length; k++) {
+    const u = movesUci[k];
+    g.move({
+      from: u.slice(0, 2) as any,
+      to: u.slice(2, 4) as any,
+      promotion: (u.length > 4 ? u.slice(4) : undefined) as any,
+    });
+  }
+  const out: string[] = [];
+  for (const san of sans) {
+    const legals = g.moves({ verbose: true }) as any[];
+    const mv = legals.find((m) => m.san === san);
+    if (!mv) break;
+    out.push(`${mv.from}${mv.to}${mv.promotion || ''}`);
+    g.move(mv);
+  }
+  return out;
+}
+
+function normalizeBookToUci(
+  bookMoves: string[] | undefined | null,
+  startPly: number,
+  movesUci: string[]
+): string[] {
+  if (!bookMoves || !bookMoves.length) return [];
+  const looksUci = /^[a-h][1-8][a-h][1-8][qrbn]?$/i.test(bookMoves[0]);
+  return looksUci
+    ? (bookMoves as string[])
+    : sanListToUciFromPosition(bookMoves as string[], startPly, movesUci);
+}
+
+function sameBaseMove(a?: string | null, b?: string | null): boolean {
+  if (!a || !b) return false;
+  return a.slice(0, 4).toLowerCase() === b.slice(0, 4).toLowerCase();
+}
+
+function severityTag(cpl: number | null): MoveEval['tag'] {
+  if (cpl == null) return 'Good';
+  if (cpl <= 30) return 'Good';
+  if (cpl <= 80) return 'Mistake';
+  return 'Blunder';
+}
+
+function symbolFor(tag: MoveEval['tag']): MoveEval['symbol'] {
+  switch (tag) {
+    case 'Genius': return '!!';
+    case 'Best': return '!';
+    case 'Good': return '';
+    case 'Mistake': return '?';
+    case 'Blunder': return '??';
+    case 'Book':
+    default: return '';
+  }
+}
+
+/* -------------------------------- component ------------------------------ */
+
+export default function App() {
+  const gameRef = useRef(new Chess());
+
+  const [fen, setFen] = useState(gameRef.current.fen());
+  const [orientation, setOrientation] = useState<'white' | 'black'>('white');
+  const [movesUci, setMovesUci] = useState<string[]>([]);
+  const [ply, setPly] = useState(0);
+  const [moveEvals, setMoveEvals] = useState<MoveEval[]>([]);
+  const [coachNotes, setCoachNotes] = useState<CoachNote[] | null>(null);
+  const [coachBusy, setCoachBusy] = useState(false);
+  const [openingInfo, setOpeningInfo] = useState<{ eco:string; name:string; variation?:string } | null>(null);
+  const [bookDepth, setBookDepth] = useState(0);
+  const [bookMask, setBookMask] = useState<boolean[]>([]);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [progress, setProgress] = useState<number | null>(null);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+
+  // engine + auto-reply state
+  const [engineBusy, setEngineBusy] = useState(false);
+  const [autoReply, setAutoReply] = useState(false);
+  const userMovedRef = useRef(false);
+  const replyScheduled = useRef(false);
+  const replyInflight = useRef(false);
+
+  // options
+  const [engineStrength, setEngineStrength] = useState(() =>
+    getNumber(ENGINE_STRENGTH_KEY, 10)
+  );
+  const [showEvalGraph, setShowEvalGraph] = useState(() => {
+    const v = getNumber(SHOW_EVAL_GRAPH_KEY, 1);
+    return v !== 0;
+  });
+
+  // eval state + suspension
+  const [evalCp, setEvalCp] = useState<number | null>(null);
+  const [evalPending, setEvalPending] = useState(false);
+  const [suspendEval, setSuspendEval] = useState(false);
+  const evalReqId = useRef(0);
+
+  /* Persist the strength number (1..20) */
+  useEffect(() => {
+    setNumber(ENGINE_STRENGTH_KEY, engineStrength);
+  }, [engineStrength]);
+
+  /* Debounced push of UCI_Elo to engine (and store display Elo) */
+  useEffect(() => {
+    const elo = uiEloFromStrength(engineStrength);
+    localStorage.setItem('engineElo', String(elo));
+    let stopped = false;
+    const t = setTimeout(async () => {
+      try { if (!stopped) await setStrength(elo); } catch {}
+    }, 250);
+    return () => { stopped = true; clearTimeout(t); };
+  }, [engineStrength]);
+
+  useEffect(() => { setNumber(SHOW_EVAL_GRAPH_KEY, showEvalGraph ? 1 : 0); }, [showEvalGraph]);
+
+  const currentMoveEval = useM(
+    () => (ply > 0 ? moveEvals[ply - 1] ?? null : null),
+    [moveEvals, ply]
+  );
+
+  // Compute FENs from current moves (robust even if positions[] is absent)
+  // Detect openings and book mask via compiled book
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const mask = await bookMaskFromMoves(movesUci || []);
+        if (cancelled) return;
+        setBookMask(mask);
+        const depth = bookDepthFromMask(mask);
+        setBookDepth(depth);
+        const label = await openingLabelAtMask(movesUci || [], mask);
+        if (cancelled) return;
+        setOpeningInfo(label);
+        if (process.env.NODE_ENV !== 'production') {
+          console.debug('[openings] mask depth:', depth, 'label:', label);
+        }
+      } catch {
+        if (!cancelled) {
+          setBookMask([]);
+          setBookDepth(0);
+          setOpeningInfo(null);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [movesUci]);
+
+  const openingText = openingInfo
+    ? `${openingInfo.name}${openingInfo.variation ? ' — ' + openingInfo.variation : ''} (${openingInfo.eco})`
+    : '';
+  const bookUci = useM(
+    () => nextBookMoves(movesUci.slice(0, ply)) || [],
+    [movesUci, ply, openingInfo]
+  );
+
+  const coachMoments = useM(() => {
+    return movesUci.map((uci, i) => {
+      const m: any = moveEvals[i] ?? {};
+      return {
+        index: i,
+        moveNo: Math.floor(i / 2) + 1,
+        side: (m.side === 'White' || (i % 2 === 0)) ? 'W' : 'B',
+        san: m.san || m.playedSan || '',
+        best: m.engineBestSan || m.bestSan || m.engineBest || '',
+        tag: m.tag || '',
+        cpBefore: typeof m.cpBestBefore === 'number'
+          ? m.cpBestBefore
+          : (typeof m.bestCpBefore === 'number' ? m.bestCpBefore : null),
+        cpAfter: typeof m.cpAfter === 'number' ? m.cpAfter : null,
+      };
+    });
+  }, [movesUci, moveEvals]);
+
+  const jumpToPly = useCallback((idx: number) => {
+    setPly((p) => Math.max(0, Math.min(movesUci.length, idx + 1)));
+  }, [movesUci.length]);
+
+  /* live eval (current board) — uses Elo-scaled time */
+  useEffect(() => {
+    if (suspendEval) return;
+    const id = ++evalReqId.current;
+    setEvalPending(true);
+    (async () => {
+      try {
+        const elo = uiEloFromStrength(engineStrength);
+        const evalMs = eloToEvalMovetimeMs(elo);
+        const res = await withTimeout(
+          analyzeFenSafe(gameRef.current.fen(), { movetimeMs: evalMs, multiPv: 1 }),
+          evalMs + 1500
+        );
+        const cp = lastCp(res?.infos);
+        if (evalReqId.current === id) {
+          const turn = gameRef.current.turn();
+          setEvalCp(cp == null ? null : (turn === 'w' ? cp : -cp));
+        }
+      } catch {
+        if (evalReqId.current === id) setEvalCp(null);
+      } finally {
+        if (evalReqId.current === id) setEvalPending(false);
+      }
+    })();
+  }, [ply, fen, suspendEval, engineStrength]);
+
+  /* rebuild game to ply N */
+  function rebuildTo(n: number) {
+    const g = new Chess();
+    for (let i = 0; i < n; i++) safeMove(g, movesUci[i]);
+    gameRef.current = g;
+    setPly(n);
+    setFen(g.fen());
+  }
+
+  /* central move application */
+  function applyUci(raw: string): boolean {
+    const g = gameRef.current;
+    const uci = withAutoQueen(raw, g);
+    const mv = safeMove(g, uci);
+    if (!mv) return false;
+    const next = movesUci.slice(0, ply).concat([uci]);
+    setMovesUci(next);
+    // Drop any stale analyses beyond the branch point so badges/arrows don't leak.
+    setMoveEvals((prev) => prev.slice(0, Math.max(0, next.length - 1)));
+    setPly(next.length);
+    setFen(g.fen());
+    return true;
+  }
+
+  /* reply scheduler using RAF */
+  function scheduleReply() {
+    if (!autoReply || replyScheduled.current || engineBusy) return;
+    replyScheduled.current = true;
+    requestAnimationFrame(() => {
+      replyScheduled.current = false;
+      setPly(p => p); // nudge React (effect below will run)
+    });
+  }
+
+  /* ---------- analysis ---------- */
+
+  async function analyzePgn() {
+    if (movesUci.length === 0) {
+      alert('Load or paste a PGN first');
+      return;
+    }
+
+    setSuspendEval(true);
+    const results: MoveEval[] = [];
+    const g = new Chess();
+    setProgress(0);
+    setMoveEvals([]);
+    setAnalyzing(true);
+
+    try {
+      for (let i = 0; i < movesUci.length; i++) {
+        const fenBefore = g.fen();
+
+        // BEFORE
+        let before: any = null;
+        try {
+          before = await withTimeout(
+            analyzeFenSafe(fenBefore, { movetimeMs: 1000, multiPv: 3 }),
+            3000
+          );
+        } catch { before = null; }
+
+        const bestCp = lastCp(before?.infos);
+        const bestMoveUci = (before?.bestMove || null) as string | null;
+
+        // apply played move
+        const playedUci = movesUci[i];
+        const mv = safeMove(g, playedUci);
+        const san = mv?.san || '(?)';
+        const fenAfter = g.fen();
+
+        // AFTER
+        let after: any = null;
+        try {
+          after = await withTimeout(
+            analyzeFenSafe(fenAfter, { movetimeMs: 700, multiPv: 2 }),
+            3000
+          );
+        } catch { after = null; }
+
+        const afterCpRaw = lastCp(after?.infos);
+
+        const mover = i % 2 === 0 ? 'w' : 'b';
+        const bestForMover = bestCp == null ? null : bestCp;
+        const afterForMover = afterCpRaw == null ? null : -afterCpRaw;
+
+        const cpBeforeWhite =
+          bestForMover == null ? null : (mover === 'w' ? bestForMover : -bestForMover);
+
+        // Store cpAfter as opponent-POV (raw engine output after the move)
+        const cpAfterStored = afterCpRaw;
+
+        const cpAfterWhite =
+          afterForMover == null ? null : (mover === 'w' ? afterForMover : -afterForMover);
+
+        let cpl: number | null = null;
+        if (bestForMover != null && afterForMover != null) {
+          cpl = bestForMover - afterForMover;
+          if (cpl < 0) cpl = 0;
+        }
+
+        const seqBefore = movesUci.slice(0, i);
+        const candidatesUci = normalizeBookToUci(nextBookMoves(seqBefore), i, movesUci);
+        const isBookMove = Array.isArray(candidatesUci) && candidatesUci.includes(playedUci);
+        const playedIsBest = sameBaseMove(playedUci, bestMoveUci);
+
+        let tag: MoveEval['tag'];
+        if (isBookMove) tag = 'Book';
+        else if (playedIsBest && cpl === 0 && bestForMover != null) tag = 'Best';
+        else tag = severityTag(cpl);
+
+        const symbol = symbolFor(tag);
+
+        results.push({
+          index: i,
+          moveNo: Math.floor(i / 2) + 1,
+          side: mover === 'w' ? 'White' : 'Black',
+          san,
+          uci: playedUci,
+          best: bestMoveUci,
+          cpBefore: cpBeforeWhite,
+          cpAfter: cpAfterStored,
+          // optional convenience for charts expecting White POV:
+          cpAfterWhite: cpAfterWhite,
+          bestCpBefore: bestForMover,
+          cpl,
+          tag,
+          symbol,
+          fenBefore,
+          fenAfter,
+        });
+
+        setProgress(Math.round(((i + 1) / movesUci.length) * 100));
+        if (i % 5 === 0) {
+          setMoveEvals([...results]);
+          await new Promise((r) => setTimeout(r, 0));
+        }
+      }
+      setMoveEvals(results);
+    } finally {
+      setAnalyzing(false);
+      setSuspendEval(false);
+      setProgress(null);
+    }
+  }
+
+  function stopAnalyze() {
+    setAnalyzing(false);
+    setSuspendEval(false);
+    setProgress(null);
+  }
+
+  // FAST batch review: fills bestCpBefore (mover POV) + cpAfter (opponent POV)
+  async function analyzePgnFast() {
+    if (movesUci.length === 0) {
+      alert('Load or paste a PGN first');
+      return;
+    }
+
+    setSuspendEval(true);
+    setAnalyzing(true);
+    setProgress(0);
+    setMoveEvals([]);
+
+    try {
+      const seq: Array<{
+        fenBefore: string;
+        fenAfter: string;
+        uci: string;
+        san: string;
+        side: 'White' | 'Black';
+      }> = [];
+      const g = new Chess();
+      for (let i = 0; i < movesUci.length; i++) {
+        const fenBefore = g.fen();
+        const mv = safeMove(g, movesUci[i]);
+        if (!mv) break;
+        const fenAfter = g.fen();
+        seq.push({
+          fenBefore,
+          fenAfter,
+          uci: movesUci[i],
+          san: mv.san || '(?)',
+          side: i % 2 === 0 ? 'White' : 'Black',
+        });
+      }
+      if (!seq.length) return;
+
+      const fens = seq.map((s) => s.fenBefore);
+      const elo = uiEloFromStrength(engineStrength);
+      const timeoutMs = Math.max(4000, fens.length * 1200);
+      const resArr = await withTimeout(reviewFast(fens, { elo }), timeoutMs);
+      const results = Array.isArray(resArr) ? resArr : [];
+
+      const scoreToNum = (sc: any): number | null => {
+        if (!sc) return null;
+        if (sc.type === 'cp' && Number.isFinite(sc.value)) return sc.value as number;
+        if (sc.type === 'mate' && Number.isFinite(sc.value)) return sc.value >= 0 ? 9900 : -9900;
+        return null;
+      };
+
+      const out: MoveEval[] = [];
+      for (let i = 0; i < seq.length; i++) {
+        const info = seq[i];
+        const cur = results[i];
+        const next = results[i + 1];
+        const bestMoveUci = cur?.bestMove || null;
+
+        const bestForMover = scoreToNum(cur?.score);   // POV mover
+        const afterOpponent = scoreToNum(next?.score); // POV opponent (side-to-move after move)
+
+        const cpBeforeWhite = bestForMover == null ? null : (info.side === 'White' ? bestForMover : -bestForMover);
+        // Store cpAfter as returned (opponent POV); keep white-POV version for display if needed
+        const cpAfterStored = afterOpponent;
+        const cpAfterWhite = afterOpponent == null ? null : (info.side === 'White' ? afterOpponent : -afterOpponent);
+
+        let cpl: number | null = null;
+        if (bestForMover != null && afterOpponent != null) {
+          cpl = Math.max(0, bestForMover - afterOpponent);
+        }
+
+        const seqBefore = movesUci.slice(0, i);
+        const candidatesUci = normalizeBookToUci(nextBookMoves(seqBefore), i, movesUci);
+        const isBookMove = Array.isArray(candidatesUci) && candidatesUci.includes(info.uci);
+        const playedIsBest = sameBaseMove(info.uci, bestMoveUci);
+
+        let tag: MoveEval['tag'];
+        if (isBookMove) tag = 'Book';
+        else if (playedIsBest && cpl === 0 && bestForMover != null) tag = 'Best';
+        else tag = severityTag(cpl);
+
+        const symbol = symbolFor(tag);
+
+        out.push({
+          index: i,
+          moveNo: Math.floor(i / 2) + 1,
+          side: info.side,
+          san: info.san,
+          uci: info.uci,
+          best: bestMoveUci,
+          cpBefore: cpBeforeWhite,
+          cpAfter: cpAfterStored,
+          // optional white-POV value for display components
+          cpAfterWhite,
+          afterScore: afterOpponent == null ? null : (next?.score ? { type: next.score.type, value: next.score.value } : null),
+          bestCpBefore: bestForMover,
+          mateAfter: (next?.score?.type === 'mate') ? next.score.value : null,
+          cpl,
+          tag,
+          symbol,
+          fenBefore: info.fenBefore,
+          fenAfter: info.fenAfter,
+        });
+
+        if (i % 5 === 0) {
+          setProgress(Math.round(((i + 1) / seq.length) * 100));
+          setMoveEvals([...out]);
+          await new Promise((r) => setTimeout(r, 0));
+        }
+      }
+
+      setProgress(100);
+      setMoveEvals(out);
+    } catch (e) {
+      console.error('[analyzePgnFast] error', e);
+    } finally {
+      setAnalyzing(false);
+      setSuspendEval(false);
+      setProgress(null);
+    }
+  }
+
+  /* ------------------------ engine / auto reply --------------------------- */
+
+  async function engineMove() {
+    if (engineBusy || replyInflight.current) return;
+    replyInflight.current = true;
+    setEngineBusy(true);
+    try {
+      const g = gameRef.current;
+      const fenNow = g.fen();
+      const elo = uiEloFromStrength(engineStrength);
+      const movetimeMs = eloToMovetimeMs(elo);
+
+      const res = await withTimeout(
+        moveWeakSafe(fenNow, { movetimeMs, multiPv: 2 }),
+        Math.max(6000, movetimeMs + 5000)
+      );
+
+      let uci = (res?.bestMove as string | undefined) || '';
+
+      // Low-Elo randomness/blunder
+      const p = blunderProbability(elo);
+      if (Math.random() < p) {
+        const coin = Math.random();
+        const alt = coin < 0.5
+          ? pickRandomLegalUci(fenNow)
+          : pickNotBestLegalUci(fenNow, uci);
+        if (alt) uci = alt;
+      }
+
+      if (!uci) return;
+      applyUci(uci);
+    } catch (e) {
+      console.error('[engineMove] error', e);
+    } finally {
+      setEngineBusy(false);
+      replyInflight.current = false;
+    }
+  }
+
+  // Effect-driven auto-reply
+  useEffect(() => {
+    if (!autoReply) return;
+    if (!userMovedRef.current) return;
+    if (engineBusy) return;
+    userMovedRef.current = false;
+    setSuspendEval(true);
+    (async () => {
+      try { await engineMove(); }
+      finally { setSuspendEval(false); }
+    })();
+  }, [ply, autoReply, engineBusy]);
+
+  /* --------------------- handlers passed to children ---------------------- */
+
+  function handleUserDrop(from: string, to: string): boolean {
+    const ok = applyUci(`${from}${to}`);
+    if (ok) {
+      userMovedRef.current = true;
+      scheduleReply();
+    }
+    return ok;
+  }
+
+  function handleUserClickMove(uci: string): boolean {
+    const ok = applyUci(uci);
+    if (ok) {
+      userMovedRef.current = true;
+      scheduleReply();
+    }
+    return ok;
+  }
+
+  function handleLoadPgnText(text: string) {
+    if (!text.trim()) return;
+    try {
+      const g = new Chess();
+      g.loadPgn(text, { sloppy: true });
+      const v = g.history({ verbose: true }) as any[];
+      gameRef.current = g;
+      const u = v.map((m) => `${m.from}${m.to}${m.promotion || ''}`);
+      setMovesUci(u);
+      setPly(u.length);
+      setFen(g.fen());
+      setMoveEvals([]);
+      setOpeningAt([]);
+    } catch {}
+  }
+
+  async function handleLoadPgnFile(file: File) {
+    const text = await file.text();
+    handleLoadPgnText(text);
+  }
+
+  function handleApplyBookMove(uci: string) {
+    applyUci(uci);
+  }
+
+  /* ------------------ review (accuracy / avg CPL) ------------------------ */
+
+  const evalSeries = useM(() => moveEvals.map((m) => m?.cpAfter ?? null), [moveEvals]);
+
+  // Build summarizeGame input: best is mover POV cp; after is opponent POV score
+  const gameSummary = useM(() => {
+    const moves = moveEvals.map((m) => ({
+      side: m.side === 'White' ? 'W' : 'B',
+      best: (typeof (m as any).bestCpBefore === 'number')
+        ? { type: 'cp' as const, value: (m as any).bestCpBefore }
+        : (typeof (m as any).cpBestBefore === 'number')
+          ? { type: 'cp' as const, value: (m as any).cpBestBefore }
+          : null,
+      after: (typeof (m as any).mateAfter === 'number')
+        ? { type: 'mate' as const, value: (m as any).mateAfter }
+        : (typeof m.cpAfter === 'number')
+          ? { type: 'cp' as const, value: m.cpAfter }
+          : null,
+      tag: m.tag as any,
+    }));
+    return summarizeGame(moves);
+  }, [moveEvals]);
+
+  const review = useM(() => {
+    if (!moveEvals.length) return null;
+    // Build side-aware half-moves from FAST review outputs.
+    const halfMoves: Array<{ side: 'W'|'B'; best: any; after: any; loss: number }> = [];
+    for (const m of moveEvals) {
+      if (m?.tag === 'Book') continue; // do not grade opening book moves
+      const side: 'W' | 'B' = m.side === 'White' ? 'W' : 'B';
+
+      // BEFORE eval (POV mover)
+      const bestBeforeVal =
+        (typeof (m as any).bestCpBefore === 'number') ? (m as any).bestCpBefore :
+        (typeof (m as any).cpBestBefore === 'number') ? (m as any).cpBestBefore : null;
+
+      // AFTER eval (POV opponent) — prefer cpAfter; fallback to mateAfter
+      const hasAfterCp   = (typeof (m as any).cpAfter === 'number');
+      const hasAfterMate = (typeof (m as any).mateAfter === 'number');
+      if (bestBeforeVal == null || (!hasAfterCp && !hasAfterMate)) continue;
+
+      const best  = { type: 'cp', value: bestBeforeVal } as const;
+      const after = hasAfterMate
+        ? ({ type: 'mate', value: (m as any).mateAfter } as const)
+        : ({ type: 'cp',   value: (m as any).cpAfter   } as const);
+
+      const loss = cpLossForMoveSideAware(best as any, after as any, side);
+      if (loss == null) continue;
+      halfMoves.push({ side, best, after, loss });
+    }
+
+    let sumW = 0, nW = 0, sumB = 0, nB = 0;
+    for (const h of halfMoves) {
+      if (h.side === 'W') { sumW += h.loss; nW++; } else { sumB += h.loss; nB++; }
+    }
+    const avgCplW = nW ? sumW / nW : null;
+    const avgCplB = nB ? sumB / nB : null;
+    const whiteAcc = accuracyFromAvgCpl(avgCplW);
+    const blackAcc = accuracyFromAvgCpl(avgCplB);
+    const quality = tallyMoveQuality(halfMoves);
+    return { avgCplW, avgCplB, whiteAcc, blackAcc, quality };
+  }, [moveEvals]);
+
+  const onGenerateNotes = useCallback(async () => {
+    try {
+      if (coachBusy) return;
+      setCoachBusy(true);
+      const inputs = {
+        summary: review || null,
+        moments: coachMoments,
+        totalPlies: Math.max(1, movesUci.length),
+      };
+      const res: any = await generateCoachNotes(inputs);
+      if (!res || (res as any).offline) {
+        setCoachNotes([]);
+        return;
+      }
+      if (Array.isArray(res.notes)) {
+        setCoachNotes(res.notes as any);
+      } else {
+        setCoachNotes([]);
+      }
+    } catch (e) {
+      console.error('[coach] generate error', e);
+      setCoachNotes([]);
+    } finally {
+      setCoachBusy(false);
+    }
+  }, [coachBusy, review, coachMoments, movesUci.length]);
+
+  const notesForPly = useM(() => {
+    const arr = Array.isArray(coachNotes) ? coachNotes : [];
+    if (!arr.length) return [];
+    const idx = Math.max(0, ply - 1);
+    const exact = arr.filter((n) => n?.type === 'move' && n.moveIndex === idx);
+    if (exact.length) return exact;
+    const near = arr.filter(
+      (n) => n?.type === 'move' && typeof n.moveIndex === 'number' && Math.abs(n.moveIndex - idx) === 1
+    );
+    if (near.length) return near;
+    if (idx === 0) return arr.filter((n) => n?.type === 'intro');
+    if (idx >= moveEvals.length - 1) return arr.filter((n) => n?.type === 'summary');
+    return [];
+  }, [ply, coachNotes, moveEvals.length]);
+
+  // (No textarea-based coach text here anymore; list is rendered via CoachMoveList)
+
+  // best-move arrow
+  const bestArrow = useM(() => {
+    if (ply === 0) return null;
+    const idx = ply - 1;
+    if (idx < 0 || idx >= moveEvals.length) return null;
+    const uci = moveEvals[idx]?.best;
+    if (!uci || uci.length < 4) return null;
+    const from = uci.slice(0, 2) as Square;
+    const to = uci.slice(2, 4) as Square;
+    return { from, to };
+  }, [ply, moveEvals]);
+
+  const cpFromMate = useCallback((mateVal: number | null | undefined) => {
+    if (mateVal == null || !isFinite(mateVal)) return null;
+    const sign = mateVal >= 0 ? 1 : -1;
+    return sign * (10000 - Math.min(99, Math.abs(mateVal)) * 100);
+  }, []);
+
+  const evalDisplayCp = useM(() => {
+    if (typeof evalCp === 'number' && isFinite(evalCp)) return evalCp;
+    const cur =
+      (currentMoveEval && typeof (currentMoveEval as any).cpAfter === 'number'
+        ? (currentMoveEval as any).cpAfter
+        : cpFromMate((currentMoveEval as any)?.mateAfter)) ?? null;
+    if (typeof cur === 'number' && isFinite(cur)) return cur;
+    for (let i = moveEvals.length - 1; i >= 0; i--) {
+      const m: any = moveEvals[i];
+      if (typeof m?.cpAfter === 'number' && isFinite(m.cpAfter)) return m.cpAfter;
+      if (typeof m?.mateAfter === 'number' && isFinite(m.mateAfter)) {
+        const v = cpFromMate(m.mateAfter);
+        if (typeof v === 'number') return v;
+      }
+    }
+    return null;
+  }, [evalCp, currentMoveEval, moveEvals, cpFromMate]);
+
+  // Only show per-move badges when the current move has an analysis tag.
+  const hasAnalysis = !!(currentMoveEval && currentMoveEval.tag);
+
+  const panelWidth = sidebarOpen ? 480 : 28;
+
+  return (
+    <div className="app-shell">
+      <KeyboardNav
+        ply={ply}
+        movesUciLength={movesUci.length}
+        onRebuildTo={rebuildTo}
+      />
+
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: `1fr ${panelWidth}px`,
+          gap: 12,
+          padding: 12,
+          height: '100vh',
+          boxSizing: 'border-box',
+          minHeight: 0,
+        }}
+      >
+        <BoardPane
+          // core state
+          fen={fen}
+          orientation={orientation}
+          onOrientationChange={setOrientation}
+          evalCp={evalDisplayCp}
+          evalPending={evalPending}
+
+          // series + current move for icons/graph
+          currentMoveEval={ply > 0 ? (moveEvals[ply - 1] ?? null) : null}
+          evalSeries={moveEvals.map(m => (m?.cpAfter ?? null))}
+          showEvalGraph={showEvalGraph}
+          onToggleEvalGraph={() => setShowEvalGraph(v => !v)}
+          hasAnalysis={hasAnalysis}
+
+          // moves + nav
+          movesUci={movesUci}
+          ply={ply}
+          onRebuildTo={rebuildTo}
+
+          // engine controls
+          engineBusy={engineBusy}
+          autoReply={autoReply}
+          setAutoReply={setAutoReply}
+          onEngineMove={engineMove}
+          engineStrength={engineStrength}
+          onEngineStrengthChange={setEngineStrength}
+
+          // user actions
+          onUserDrop={handleUserDrop}
+          onNewGame={() => {
+            setMovesUci([]);
+            setPly(0);
+            const g = new Chess();
+            gameRef.current = g;
+            setFen(g.fen());
+            setMoveEvals([]);
+            setOpeningInfo(null);
+          }}
+
+          // visuals
+          bestArrow={bestArrow}
+          bookMask={bookMask}
+          currentPly={ply}
+          lastMove={ply > 0 && movesUci[ply - 1] ? { from: movesUci[ply - 1].slice(0,2), to: movesUci[ply - 1].slice(2,4) } : null}
+        />
+
+        <SidebarPane
+          sidebarOpen={sidebarOpen}
+          setSidebarOpen={setSidebarOpen}
+          currentEval={currentMoveEval ?? undefined}
+          openingText={openingText}
+          gameEloWhite={gameSummary?.white?.estElo ?? null}
+          gameEloBlack={gameSummary?.black?.estElo ?? null}
+          movesUci={movesUci}
+          ply={ply}
+          bookUci={bookUci}
+          analyzing={analyzing}
+          progress={progress}
+          review={review}
+          moveEvals={moveEvals}
+          bookDepth={bookDepth}
+          bookMask={bookMask}
+          onRebuildTo={rebuildTo}
+          onAnalyze={analyzePgn}
+          onAnalyzeFast={analyzePgnFast}
+          onStopAnalyze={stopAnalyze}
+          onLoadPgnText={handleLoadPgnText}
+          onLoadPgnFile={handleLoadPgnFile}
+          onApplyBookMove={handleApplyBookMove}
+          engineStrength={engineStrength}
+          onEngineStrengthChange={setEngineStrength}
+          onCoachNotesChange={setCoachNotes}
+          activeCoachNotes={notesForPly}
+          coachNotes={Array.isArray(coachNotes) ? coachNotes : []}
+          currentPly={ply}
+          onJumpToPly={jumpToPly}
+          onGenerateNotes={onGenerateNotes}
+          coachBusy={coachBusy}
+        />
+      </div>
+    </div>
+  );
+}
