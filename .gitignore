@@ -1,1 +1,123 @@
 node_modules
+# ---- OS junk ---------------------------------------------------------------
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Icon?
+._*
+
+# ---- Editors/IDEs ----------------------------------------------------------
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/tasks.json
+.idea/
+*.iml
+
+# ---- Node / JS toolchains --------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-debug.log*
+package-lock.json.*   # partial/backup files (keep main lockfile)
+yarn.lock.*           # partial/backup files (keep main lockfile)
+.pnp*
+.pnp.js
+
+# ---- TypeScript ------------------------------------------------------------
+*.tsbuildinfo
+
+# ---- Build outputs (web + electron) ---------------------------------------
+dist/
+build/
+out/
+release/
+tmp/
+temp/
+.cache/
+.parcel-cache/
+.turbo/
+coverage/
+
+# Vite / Webpack internals
+.vite/
+vite.config.ts.timestamp-*
+webpack-assets.json
+stats.json
+
+# Next/Nuxt/Svelte (harmless if unused)
+.next/
+.nuxt/
+.svelte-kit/
+
+# ---- Electron packaging ----------------------------------------------------
+*.asar
+dist_electron/
+electron/dist/
+electron/out/
+electron/build/
+**/*.map
+
+# Platform-specific packaged apps
+*.app
+*.dmg
+*.exe
+*.msi
+*.nupkg
+*.AppImage
+*.snap
+
+# ---- Environment / secrets -------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# ---- Logs & runtime --------------------------------------------------------
+*.log
+logs/
+*.pid
+*.seed
+*.pid.lock
+
+# ---- Tests / E2E -----------------------------------------------------------
+playwright-report/
+test-results/
+cypress/videos/
+cypress/screenshots/
+cypress/downloads/
+
+# ---- Generated assets ------------------------------------------------------
+public/generated/
+webui/public/generated/
+webui/.vite/
+webui/.cache/
+
+# ---- Native/ML assets (keep out of git) -----------------------------------
+models/
+**/*.gguf
+**/*.bin
+**/*.pt
+**/*.onnx
+
+# Stockfish/engine binaries (bundle at release time, not in git)
+**/stockfish
+**/stockfish.exe
+bin/
+vendor/
+
+# ---- Misc ------------------------------------------------------------------
+*.swp
+*.swo
+*.bak
+*.tmp
+*.orig
+*.rej
+
+# If using monorepo workspaces
+packages/*/dist/
+packages/*/build/
+packages/*/.turbo/
+packages/*/.cache/
+
