@@ -133,7 +133,7 @@ function tryParseArrayCandidates(cands) {
 async function callModelStructured({ model, prompt, expected }) {
   const baseBody = {
     model,
-    stream: false,
+    stream: COACH_OUTPUT_MODE === 'ndjson',
     system: buildSystemPrompt(),
     prompt,
     options: {
@@ -142,7 +142,7 @@ async function callModelStructured({ model, prompt, expected }) {
       top_k: 40,
       repeat_penalty: 1.05,
       num_ctx: 4096,
-      num_predict: Math.max(240, TOKENS_PER_ITEM * Math.max(1, expected || 1)),
+      num_predict: Math.max(220, TOKENS_PER_ITEM * Math.max(1, expected || 1)),
       stop: ['\n#', '\nN='],
     },
     keep_alive: '45m',
