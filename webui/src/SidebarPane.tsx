@@ -4,6 +4,7 @@
 
 import React from 'react';
 import { useEffect, useMemo } from 'react';
+import { pgnFromMoves, annotatedPgn, analysisJson } from './utils/exporters';
 import { useCoach } from './useCoach';
 import type { CoachNote } from './useCoach';
 import CoachMoveList from './components/CoachMoveList';
@@ -11,10 +12,12 @@ import CoachMoveList from './components/CoachMoveList';
 /* ---------------------------------- Types ---------------------------------- */
 
 type Review = {
-  avgW: number | null;
-  avgB: number | null;
+  avgCplW: number | null;
+  avgCplB: number | null;
   whiteAcc: number | null;
   blackAcc: number | null;
+  estEloWhite?: number | null;
+  estEloBlack?: number | null;
 } | null;
 
 type QualityTally = {
@@ -56,6 +59,13 @@ type SidebarProps = {
   gameEloWhite?: number | null;
   gameEloBlack?: number | null;
   movesUci: string[];
+  moveEvals?: MoveEval[];
+  openingInfo?: string | null;
+  whiteAcc?: number | null;
+  blackAcc?: number | null;
+  avgCplW?: number | null;
+  avgCplB?: number | null;
+  result?: '1-0' | '0-1' | '1/2-1/2' | '*';
   ply: number;
   /** Number of plies from start that are in book (force-tag as "Book"). */
   bookDepth?: number;
@@ -273,10 +283,18 @@ export default function SidebarPane(props: SidebarProps) {
     openingText,
     gameEloWhite,
     gameEloBlack,
+    movesUci = [],
+    moveEvals = [],
+    openingInfo = null,
+    whiteAcc = null,
+    blackAcc = null,
+    avgCplW = null,
+    avgCplB = null,
+    result = '*',
     bookUci: _bookUci, onApplyBookMove: _onApplyBookMove,
     onLoadPgnText, onLoadPgnFile,
     analyzing, progress, onAnalyze, onAnalyzeFast, onStopAnalyze,
-    review, moveEvals, onRebuildTo, bookDepth = 0, bookMask = [],
+    review, onRebuildTo, bookDepth = 0, bookMask = [],
     engineStrength, onEngineStrengthChange,
     onCoachNotesChange,
     activeCoachNotes,
@@ -307,6 +325,60 @@ export default function SidebarPane(props: SidebarProps) {
   const selectedElo = ELO_CHOICES.reduce((closest, v) =>
     Math.abs(v - effElo) < Math.abs(closest - effElo) ? v : closest
   , ELO_CHOICES[0]);
+
+  async function saveFile(defaultPath: string, ext: 'pgn' | 'json', content: string) {
+    try {
+      if ((window as any).electron?.invoke) {
+        await (window as any).electron.invoke('export:save', {
+          defaultPath,
+          filters: ext === 'pgn'
+            ? [{ name: 'PGN', extensions: ['pgn'] }]
+            : [{ name: 'JSON', extensions: ['json'] }],
+          content,
+        });
+      } else {
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([content], { type: ext === 'pgn' ? 'application/x-chess-pgn' : 'application/json' }));
+        a.download = defaultPath;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(a.href);
+      }
+    } catch (e) {
+      console.error('[export] failed', e);
+    }
+  }
+
+  function exportPGN() {
+    const pgn = pgnFromMoves({ movesUci: movesUci || [], result: result || '*' });
+    saveFile('game.pgn', 'pgn', pgn);
+  }
+
+  function exportAnnotatedPGN() {
+    const pgn = annotatedPgn({
+      movesUci: movesUci || [],
+      moveEvals: moveEvals as any[],
+      headers: openingInfo ? { Opening: String(openingInfo) } : undefined,
+      result: result || '*',
+    });
+    saveFile('game_annotated.pgn', 'pgn', pgn);
+  }
+
+  function exportJSON() {
+    const json = analysisJson({
+      movesUci: movesUci || [],
+      moveEvals: moveEvals as any[],
+      opening: openingInfo || null,
+      whiteAcc: whiteAcc ?? null,
+      blackAcc: blackAcc ?? null,
+      avgCplW: avgCplW ?? null,
+      avgCplB: avgCplB ?? null,
+      result: result || '*',
+    });
+    saveFile('game_analysis.json', 'json', json);
+  }
 
 
   return (
@@ -418,12 +490,12 @@ export default function SidebarPane(props: SidebarProps) {
         <div style={S.section}>
           <div style={S.title}>Game Review</div>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <div>White accuracy: <strong>{review?.whiteAcc ?? '—'}%</strong></div>
-            <div>Black accuracy: <strong>{review?.blackAcc ?? '—'}%</strong></div>
+            <div>White accuracy: <strong>{review?.whiteAcc != null ? `${Math.round(review.whiteAcc)}%` : '—'}</strong></div>
+            <div>Black accuracy: <strong>{review?.blackAcc != null ? `${Math.round(review.blackAcc)}%` : '—'}</strong></div>
             <div>
               Avg CPL (W/B):{' '}
-              <strong>{review?.avgW == null ? '—' : review.avgW.toFixed(1)}</strong> /{' '}
-              <strong>{review?.avgB == null ? '—' : review.avgB.toFixed(1)}</strong>
+              <strong>{review?.avgCplW != null ? Math.round(review.avgCplW) : '—'}</strong> /{' '}
+              <strong>{review?.avgCplB != null ? Math.round(review.avgCplB) : '—'}</strong>
             </div>
           </div>
           <div style={{ ...S.small, marginTop: 6 }}>
@@ -436,11 +508,21 @@ export default function SidebarPane(props: SidebarProps) {
           <div style={S.section}>
             <div style={S.title}>Game Elo (estimate)</div>
             <div style={{ display: 'flex', gap: 12 }}>
-              <div style={S.small}>White: {gameEloWhite ?? '—'}</div>
-              <div style={S.small}>Black: {gameEloBlack ?? '—'}</div>
+              <div style={S.small}>White: {gameEloWhite != null ? Math.round(gameEloWhite) : '—'}</div>
+              <div style={S.small}>Black: {gameEloBlack != null ? Math.round(gameEloBlack) : '—'}</div>
             </div>
           </div>
         )}
+
+        {/* Export panel */}
+        <div style={S.section}>
+          <div style={S.title}>Export</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            <button style={S.button} onClick={exportPGN}>Export PGN</button>
+            <button style={S.button} onClick={exportAnnotatedPGN}>PGN (annotated)</button>
+            <button style={S.button} onClick={exportJSON}>Export JSON</button>
+          </div>
+        </div>
 
         {/* Moves table (stays within the scrollable column) — show "Opening" for book plies */}
         <div style={S.section}>
@@ -480,7 +562,16 @@ export default function SidebarPane(props: SidebarProps) {
                       <td style={S.thtd}>{m.san}</td>
                       <td style={S.thtd}>{m.best || ''}</td>
                       <td style={S.thtd}>
-                        {m.cpAfter == null ? '—' : (m.cpAfter > 0 ? `+${m.cpAfter/100}` : `${m.cpAfter/100}`)}
+                        {(() => {
+                          // Prefer White-POV number shipped by analysis if present
+                          const whiteAfter =
+                            typeof m.cpAfterWhite === 'number'
+                              ? m.cpAfterWhite
+                              : (typeof m.cpAfter === 'number'
+                                  ? ((m.side === 'White' || m.side === 'W') ? -m.cpAfter : m.cpAfter)
+                                  : null);
+                          return whiteAfter == null ? '—' : (whiteAfter / 100).toFixed(1);
+                        })()}
                       </td>
                       <td style={S.thtd}>
                         <TagIcon tag={iconTag} size={20} />
@@ -511,13 +602,13 @@ function CoachSection({ openingText, review, moveEvals, onRebuildTo, onNotes, ac
   const { notes, busy, err, run } = useCoach();
 
   const inputs = useMemo(()=>({
-    summary: {
-      opening: openingText || undefined,
-      whiteAcc: review?.whiteAcc ?? undefined,
-      blackAcc: review?.blackAcc ?? undefined,
-      avgCplW: review?.avgW ?? undefined,
-      avgCplB: review?.avgB ?? undefined,
-    },
+      summary: {
+        opening: openingText || undefined,
+        whiteAcc: review?.whiteAcc ?? undefined,
+        blackAcc: review?.blackAcc ?? undefined,
+        avgCplW: review?.avgCplW ?? undefined,
+        avgCplB: review?.avgCplB ?? undefined,
+      },
     moments: moveEvals
       .filter(m => m.tag === 'Mistake' || m.tag === 'Blunder' || m.tag === 'Best' || m.tag === 'Genius')
       .map(m => ({

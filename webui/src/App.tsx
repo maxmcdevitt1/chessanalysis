@@ -1,5 +1,12 @@
 // webui/src/App.tsx
-import { summarizeGame, accuracyFromAvgCpl, cpLossForMoveSideAware, tallyMoveQuality } from './ScoreHelpers';
+import { cpLossForMoveSideAware, tallyMoveQuality } from './ScoreHelpers';
+import { detectOpeningByTrie } from './utils/openingTrie';
+// Fallback to your existing FEN-book helpers if trie JSON is missing:
+import {
+  bookMaskFromMoves as fallbackBookMaskFromMoves,
+  bookDepthFromMask as fallbackBookDepthFromMask,
+  openingLabelAtMask as fallbackOpeningLabelAtMask,
+} from './utils/openingBook';
 import { useCallback, useEffect, useMemo as useM, useRef, useState } from 'react';
 import { generateCoachNotes } from './CommentaryServiceOllama';
 import { analyzeFen, moveWeak, getCapabilities, setStrength, reviewFast } from './bridge';
@@ -7,8 +14,6 @@ import { Chess } from './chess-compat';
 import type { Square } from './chess-compat';
 import type { CoachNote } from './useCoach';
 
-// Switch opening detection to the compiled book (opening-book.json)
-import { bookMaskFromMoves, bookDepthFromMask, openingLabelAtMask } from './utils/openingBook';
 import { nextBookMoves } from './openings/matcher';
 import BoardPane from './BoardPane';
 import SidebarPane from './SidebarPane';
@@ -28,11 +33,13 @@ export type MoveEval = {
   best?: string | null;
   cpBefore?: number | null; // white POV
   cpAfter?: number | null;  // white POV
+  cpAfterWhite?: number | null;
   bestCpBefore?: number | null; // mover POV
   mateAfter?: number | null;
   cpl?: number | null;
   tag?: 'Genius' | 'Best' | 'Good' | 'Mistake' | 'Blunder' | 'Book';
   symbol?: '!!' | '!' | '!? ' | '?' | '??' | '';
+  isBook?: boolean;
   fenBefore: string;
   fenAfter: string;
 };
@@ -120,6 +127,45 @@ function blunderProbability(uiElo: number) {
   if (uiElo <= 1200) return 0.08;
   if (uiElo <= 1400) return 0.05;
   return 0.02;
+}
+
+// Robust mover and POV helpers
+function moverSideOf(m: any): 'W'|'B' {
+  const s = String(m?.side ?? m?.color ?? '').toUpperCase();
+  if (s.startsWith('W')) return 'W';
+  if (s.startsWith('B')) return 'B';
+  if (Number.isFinite(m?.ply)) return (m.ply % 2 === 1) ? 'W' : 'B'; // ply=1 -> White
+  return 'W';
+}
+function afterToMoverPOV(m: any): number | null {
+  // Prefer cpAfterWhite when present; else negate cpAfter after White moves
+  if (typeof m?.cpAfterWhite === 'number') return (moverSideOf(m) === 'W') ? -m.cpAfter : m.cpAfterWhite;
+  const cp = typeof m?.cpAfter === 'number' ? m.cpAfter : null;
+  return cp == null ? null : -cp;
+}
+
+/* ----------------------------- metrics helpers --------------------------- */
+// Conservative accuracy model similar to common ACPL→accuracy approximations.
+function accFromAcplConservative(acpl: number | null): number | null {
+  if (acpl == null || !isFinite(acpl)) return null;
+  const raw = 103 - 2 * Math.sqrt(Math.max(0, acpl));
+  return Math.max(0, Math.min(100, raw));
+}
+
+type Buckets = { inacc: number; mistakes: number; blunders: number };
+function estimateEloConservative(acpl: number | null, buckets: Buckets): number | null {
+  if (acpl == null || !isFinite(acpl)) return null;
+  const { inacc, mistakes, blunders } = buckets;
+  const base = 2200 - 7 * acpl - 10 * inacc - 30 * mistakes - 60 * blunders;
+  return Math.max(600, Math.min(2400, Math.round(base)));
+}
+
+// Bucket losses (centipawns) into rough severity levels independent of tags.
+function bucketFromLossCp(lossCp: number): 'ok'|'inacc'|'mistake'|'blunder' {
+  if (lossCp <= 50) return 'ok';        // ≤0.50 pawns
+  if (lossCp <= 150) return 'inacc';    // 0.51–1.50
+  if (lossCp <= 300) return 'mistake';  // 1.51–3.00
+  return 'blunder';                      // >3.00
 }
 
 function pickRandomLegalUci(fen: string): string | null {
@@ -238,7 +284,7 @@ export default function App() {
   const [moveEvals, setMoveEvals] = useState<MoveEval[]>([]);
   const [coachNotes, setCoachNotes] = useState<CoachNote[] | null>(null);
   const [coachBusy, setCoachBusy] = useState(false);
-  const [openingInfo, setOpeningInfo] = useState<{ eco:string; name:string; variation?:string } | null>(null);
+  const [openingInfo, setOpeningInfo] = useState<{ eco:string; name:string; variation?:string } | string | null>(null);
   const [bookDepth, setBookDepth] = useState(0);
   const [bookMask, setBookMask] = useState<boolean[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
@@ -290,36 +336,82 @@ export default function App() {
     [moveEvals, ply]
   );
 
-  // Compute FENs from current moves (robust even if positions[] is absent)
-  // Detect openings and book mask via compiled book
+  // ---------- OPENING: run ONLY AFTER ANALYSIS ----------
+  // We wait for moveEvals (engine results) before labeling/marking the opening.
+  // This prevents early, shallow labels and lets us optionally extend the prefix.
   useEffect(() => {
+    if (!moveEvals || moveEvals.length === 0) return; // not analyzed yet
     let cancelled = false;
+
+    // Small-Δcp extender: continues opening while theory-like (quiet) moves persist.
+    function extendOpeningPrefix(
+      moves: any[],
+      baseDepth: number,
+      opts: { tolCp?: number; maxPlies?: number } = {}
+    ) {
+      const tol = opts.tolCp ?? 35;     // ≤0.35 pawns = “book-like”
+      const cap = opts.maxPlies ?? 24;  // up to 12 full moves
+      const N = Math.min(moves.length, cap);
+      let d = Math.min(baseDepth | 0, N);
+      for (let i = d; i < N; i++) {
+        const m = moves[i];
+        if (!m) break;
+        const before = typeof m?.cpBefore === 'number' ? m.cpBefore : null; // mover POV
+        const after  = ((): number | null => {
+          if (typeof m?.cpAfterWhite === 'number') return m.cpAfterWhite;   // White POV after move
+          const cp = typeof m?.cpAfter === 'number' ? m.cpAfter : null;     // side-to-move POV
+          const side = String(m?.side ?? m?.color ?? '').toUpperCase().startsWith('W') ? 'W'
+                      : Number.isFinite(m?.ply) ? (m.ply % 2 === 1 ? 'W' : 'B')
+                      : 'W';
+          return cp == null ? null : (side === 'W' ? -cp : cp);             // convert to White POV
+        })();
+        if (before == null || after == null) break;
+        const delta = Math.abs(after - before);
+        if (delta <= tol) d = i + 1; else break;
+      }
+      return { depth: d, mask: Array.from({ length: moves.length }, (_, i) => i < d) };
+    }
+
     (async () => {
       try {
-        const mask = await bookMaskFromMoves(movesUci || []);
-        if (cancelled) return;
-        setBookMask(mask);
-        const depth = bookDepthFromMask(mask);
-        setBookDepth(depth);
-        const label = await openingLabelAtMask(movesUci || [], mask);
-        if (cancelled) return;
-        setOpeningInfo(label);
-        if (process.env.NODE_ENV !== 'production') {
-          console.debug('[openings] mask depth:', depth, 'label:', label);
+        // 1) Try SAN-trie detection (label + base depth)
+        const res = await detectOpeningByTrie(movesUci || []);
+        if (!cancelled && res) {
+          // 2) Extend prefix with engine deltas (post-analysis only)
+          const extended = extendOpeningPrefix(moveEvals, res.depth, { tolCp: 35, maxPlies: 24 });
+          setOpeningInfo(`${res.eco} ${res.name}`);
+          setBookDepth(extended.depth);
+          setBookMask(extended.mask);
+          return;
         }
+      } catch {}
+      // 3) Fallback to legacy FEN-book (also post-analysis)
+      try {
+        const mask0 = await fallbackBookMaskFromMoves(movesUci || []);
+        if (cancelled) return;
+        const depth0 = fallbackBookDepthFromMask(mask0);
+        const extended = extendOpeningPrefix(moveEvals, depth0, { tolCp: 35, maxPlies: 24 });
+        setBookDepth(extended.depth);
+        setBookMask(extended.mask);
+        const label = await fallbackOpeningLabelAtMask(movesUci || [], mask0);
+        setOpeningInfo(label);
       } catch {
         if (!cancelled) {
+          setOpeningInfo(null);
           setBookMask([]);
           setBookDepth(0);
-          setOpeningInfo(null);
         }
       }
     })();
+
     return () => { cancelled = true; };
-  }, [movesUci]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [moveEvals]); // <-- ONLY after analysis
 
   const openingText = openingInfo
-    ? `${openingInfo.name}${openingInfo.variation ? ' — ' + openingInfo.variation : ''} (${openingInfo.eco})`
+    ? (typeof openingInfo === 'string'
+        ? openingInfo
+        : `${openingInfo.name}${openingInfo.variation ? ' — ' + openingInfo.variation : ''} (${openingInfo.eco})`)
     : '';
   const bookUci = useM(
     () => nextBookMoves(movesUci.slice(0, ply)) || [],
@@ -747,51 +839,61 @@ export default function App() {
 
   const evalSeries = useM(() => moveEvals.map((m) => m?.cpAfter ?? null), [moveEvals]);
 
-  // Build summarizeGame input: best is mover POV cp; after is opponent POV score
-  const gameSummary = useM(() => {
-    const moves = moveEvals.map((m) => ({
-      side: m.side === 'White' ? 'W' : 'B',
-      best: (typeof (m as any).bestCpBefore === 'number')
-        ? { type: 'cp' as const, value: (m as any).bestCpBefore }
-        : (typeof (m as any).cpBestBefore === 'number')
-          ? { type: 'cp' as const, value: (m as any).cpBestBefore }
-          : null,
-      after: (typeof (m as any).mateAfter === 'number')
-        ? { type: 'mate' as const, value: (m as any).mateAfter }
-        : (typeof m.cpAfter === 'number')
-          ? { type: 'cp' as const, value: m.cpAfter }
-          : null,
-      tag: m.tag as any,
-    }));
-    return summarizeGame(moves);
-  }, [moveEvals]);
-
   const review = useM(() => {
     if (!moveEvals.length) return null;
-    // Build side-aware half-moves from FAST review outputs.
+    // Build side-aware half-moves from analysis outputs.
     const halfMoves: Array<{ side: 'W'|'B'; best: any; after: any; loss: number }> = [];
+    // Track buckets for conservative Elo estimate.
+    let bW: Buckets = { inacc: 0, mistakes: 0, blunders: 0 };
+    let bB: Buckets = { inacc: 0, mistakes: 0, blunders: 0 };
     for (const m of moveEvals) {
-      if (m?.tag === 'Book') continue; // do not grade opening book moves
-      const side: 'W' | 'B' = m.side === 'White' ? 'W' : 'B';
+      if (m?.tag === 'Book' || (m as any)?.isBook) continue; // exclude book moves from ACPL
+      const side: 'W' | 'B' = moverSideOf(m);
 
-      // BEFORE eval (POV mover)
-      const bestBeforeVal =
+      const beforeCpMover = (typeof (m as any).cpBefore === 'number') ? (m as any).cpBefore : undefined;
+      const bestBeforeCp =
         (typeof (m as any).bestCpBefore === 'number') ? (m as any).bestCpBefore :
-        (typeof (m as any).cpBestBefore === 'number') ? (m as any).cpBestBefore : null;
+        (typeof (m as any).cpBestBefore  === 'number') ? (m as any).cpBestBefore  : undefined;
 
-      // AFTER eval (POV opponent) — prefer cpAfter; fallback to mateAfter
-      const hasAfterCp   = (typeof (m as any).cpAfter === 'number');
-      const hasAfterMate = (typeof (m as any).mateAfter === 'number');
-      if (bestBeforeVal == null || (!hasAfterCp && !hasAfterMate)) continue;
+      const afterCpMover =
+        (typeof (m as any).cpAfterWhite === 'number')
+          ? ((side === 'W' && typeof (m as any).cpAfter === 'number') ? -(m as any).cpAfter : (m as any).cpAfterWhite)
+          : afterToMoverPOV(m) ?? undefined;
+      if (typeof beforeCpMover === 'number' && typeof afterCpMover === 'number') {
+        (m as any).deltaCpMover = afterCpMover - beforeCpMover;
+      }
+      const hasAfterMate = typeof (m as any).mateAfter === 'number';
 
-      const best  = { type: 'cp', value: bestBeforeVal } as const;
+      const best = (typeof bestBeforeCp === 'number') ? ({ type: 'cp', value: bestBeforeCp } as const) : null;
       const after = hasAfterMate
         ? ({ type: 'mate', value: (m as any).mateAfter } as const)
-        : ({ type: 'cp',   value: (m as any).cpAfter   } as const);
+        : (typeof afterCpMover === 'number'
+            ? ({ type: 'cp', value: afterCpMover } as const)
+            : null);
 
-      const loss = cpLossForMoveSideAware(best as any, after as any, side);
+      let loss = cpLossForMoveSideAware(best as any, after as any, side);
+      // Fallback: use signed delta for the mover if provided in data (negative means worse for mover)
+      if (loss == null && typeof (m as any).deltaCpMover === 'number') {
+        const d = (m as any).deltaCpMover;
+        loss = Math.max(0, -d);
+      }
+      // Last resort: if cpBefore/cpAfterWhite exist, approximate CPL = max(0, before - after_mover)
+      if (loss == null && typeof beforeCpMover === 'number' && typeof afterCpMover === 'number') {
+        loss = Math.max(0, beforeCpMover - afterCpMover);
+      }
       if (loss == null) continue;
       halfMoves.push({ side, best, after, loss });
+
+      const b = bucketFromLossCp(loss);
+      if (side === 'W') {
+        if (b === 'inacc') bW.inacc++;
+        else if (b === 'mistake') bW.mistakes++;
+        else if (b === 'blunder') bW.blunders++;
+      } else {
+        if (b === 'inacc') bB.inacc++;
+        else if (b === 'mistake') bB.mistakes++;
+        else if (b === 'blunder') bB.blunders++;
+      }
     }
 
     let sumW = 0, nW = 0, sumB = 0, nB = 0;
@@ -800,10 +902,13 @@ export default function App() {
     }
     const avgCplW = nW ? sumW / nW : null;
     const avgCplB = nB ? sumB / nB : null;
-    const whiteAcc = accuracyFromAvgCpl(avgCplW);
-    const blackAcc = accuracyFromAvgCpl(avgCplB);
+    const whiteAcc = accFromAcplConservative(avgCplW);
+    const blackAcc = accFromAcplConservative(avgCplB);
     const quality = tallyMoveQuality(halfMoves);
-    return { avgCplW, avgCplB, whiteAcc, blackAcc, quality };
+    // Conservative Elo estimates
+    const estEloWhite = estimateEloConservative(avgCplW, bW);
+    const estEloBlack = estimateEloConservative(avgCplB, bB);
+    return { avgCplW, avgCplB, whiteAcc, blackAcc, quality, estEloWhite, estEloBlack };
   }, [moveEvals]);
 
   const onGenerateNotes = useCallback(async () => {
@@ -962,9 +1067,15 @@ export default function App() {
           setSidebarOpen={setSidebarOpen}
           currentEval={currentMoveEval ?? undefined}
           openingText={openingText}
-          gameEloWhite={gameSummary?.white?.estElo ?? null}
-          gameEloBlack={gameSummary?.black?.estElo ?? null}
+          gameEloWhite={review?.estEloWhite ?? null}
+          gameEloBlack={review?.estEloBlack ?? null}
           movesUci={movesUci}
+          moveEvals={moveEvals}
+          openingInfo={openingText || null}
+          whiteAcc={review?.whiteAcc ?? null}
+          blackAcc={review?.blackAcc ?? null}
+          avgCplW={review?.avgCplW ?? null}
+          avgCplB={review?.avgCplB ?? null}
           ply={ply}
           bookUci={bookUci}
           analyzing={analyzing}

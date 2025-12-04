@@ -1,5 +1,7 @@
 // Electron engine bridge for Stockfish (UCI)
 const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 const readline = require('readline');
 const os = require('os');
 
@@ -29,14 +31,23 @@ function parseInfoLine(line) {
 }
 
 function clamp(n, a, b) { return Math.max(a, Math.min(b, n)); }
-function pickThreads() {
+function pickThreads(requested) {
+  const env = Number(process.env.ENGINE_THREADS);
+  if (Number.isFinite(env) && env > 0) return Math.max(1, Math.floor(env));
+  if (Number.isFinite(requested) && requested > 0) return Math.max(1, Math.floor(requested));
   const cores = Math.max(1, os.cpus()?.length || 2);
-  return clamp(cores <= 4 ? cores : Math.floor(cores * 0.75), 2, 8);
+  return Math.max(4, cores);
+}
+function pickHashMb(requested) {
+  const env = Number(process.env.ENGINE_HASH_MB);
+  const raw = Number.isFinite(env) ? env : requested;
+  // Keep in the sane 1–4 GB window unless the caller overrides via env/arg.
+  return clamp(Math.round(raw || 1024), 1024, 4096);
 }
 
 /* ---------------------- engine lifecycle & API ----------------------- */
 
-async function createEngine({ bin, threads = 2, hash = 128 }) {
+async function createEngine({ bin, threads, hash } = {}) {
   const { child, rl } = createStockfish(bin);
 
   const listeners = new Set();
@@ -81,10 +92,16 @@ async function createEngine({ bin, threads = 2, hash = 128 }) {
   // --- UCI init ---
   send('uci');
   await waitLine((l) => l === 'uciok', 10000);
-  const threadCount = pickThreads();
+  const threadCount = pickThreads(threads);
+  const hashMb = pickHashMb(hash);
+  const baseThreads = threadCount;
+  const baseHashMb = hashMb;
   send(`setoption name Threads value ${threadCount}`);
-  send('setoption name Hash value 512');
+  send(`setoption name Hash value ${hashMb}`);
   send('setoption name MultiPV value 1');
+  send('setoption name UCI_LimitStrength value false');
+  send('setoption name Skill Level value 20');
+  send('setoption name Contempt value 0');
   try { send('setoption name UCI_AnalyseMode value true'); } catch {}
   try { send('setoption name Ponder value false'); } catch {}
   send('isready');
@@ -102,34 +119,30 @@ async function createEngine({ bin, threads = 2, hash = 128 }) {
 
   /* --------------------- strength & time management --------------------- */
 
-  let currentElo = 1500;
+  let currentElo = 2000;
   let limitOn = false;
 
   async function applyStrength(elo = 1500) {
     return enqueue(async () => {
-      currentElo = Number(elo) || 1500;
-
-      const MIN_ELO = 800;
-      const MAX_ELO = 2500;
-      const clamped = Math.max(MIN_ELO, Math.min(MAX_ELO, Math.floor(currentElo)));
+      currentElo = Number(elo) || 2000;
 
       send('stop');
       send('isready'); await waitLine((l) => l === 'readyok').catch(() => {});
 
       send('setoption name MultiPV value 1');
-      send('setoption name UCI_LimitStrength value true');
-      send(`setoption name UCI_Elo value ${clamped}`);
+      send('setoption name UCI_LimitStrength value false');
+      // Keep Elo slider as a UI hint only; engine stays at full strength.
       send('setoption name Skill Level value 20');
       send('setoption name Contempt value 0');
       try { send('setoption name Analysis Contempt value Both'); } catch {}
       try { send('setoption name Ponder value false'); } catch {}
 
-      send('setoption name Threads value 2');
-      send('setoption name Hash value 256');
+      send(`setoption name Threads value ${baseThreads}`);
+      send(`setoption name Hash value ${baseHashMb}`);
 
       send('isready'); await waitLine((l) => l === 'readyok').catch(() => {});
-      limitOn = true;
-      return { ok: true, eloApplied: clamped };
+      limitOn = false;
+      return { ok: true, eloApplied: currentElo, limitStrength: false };
     });
   }
 
@@ -165,8 +178,8 @@ async function createEngine({ bin, threads = 2, hash = 128 }) {
       send('setoption name UCI_LimitStrength value false');
       send('setoption name Skill Level value 20');
       send('setoption name MultiPV value 1');
-      send('setoption name Threads value 2');
-      send('setoption name Hash value 256');
+      send(`setoption name Threads value ${baseThreads}`);
+      send(`setoption name Hash value ${baseHashMb}`);
       send('isready'); await waitLine((l) => l === 'readyok').catch(() => {});
       return await fn();
     } finally {

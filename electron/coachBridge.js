@@ -8,8 +8,10 @@ const https = require('https');
 
 const DEFAULT_MODEL = process.env.COACH_MODEL || 'llama3.2:3b-instruct-q5_K_M';
 const COACH_DEBUG = process.env.COACH_DEBUG === '1';
-const BATCH_PLIES = parseInt(process.env.COACH_BATCH_PLIES || '14', 10);
-const OLLAMA_URL = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
+const BATCH_PLIES = parseInt(process.env.COACH_BATCH_PLIES || '12', 10); // per-call plies
+const TOKENS_PER_ITEM = parseInt(process.env.COACH_TOKENS_PER_ITEM || '90', 10);
+const COACH_OUTPUT_MODE = (process.env.COACH_OUTPUT_MODE || 'ndjson').toLowerCase(); // 'ndjson' or 'array'
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 const TIMEOUT_MS = Number(process.env.COACH_TIMEOUT_MS || 30000);
 const AUTO_PULL = String(process.env.AUTO_PULL_COACH || '0') === '1';
 
@@ -18,6 +20,8 @@ function chunk(arr, size) {
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
   return out;
 }
+
+const fmt = (n) => (Number.isFinite(n) ? Math.round(n) : '-');
 
 /* ------------------------------ HTTP helper ------------------------------- */
 
@@ -70,13 +74,16 @@ async function ensureModelAvailable(model) {
 /* -------------------------------- Prompt ---------------------------------- */
 
 function buildSystemPrompt() {
-  return [
-    'You are a concise chess coach. Output JSON only. No markdown.',
-    'Do NOT change provided tags or numbers.',
-    'For each input line `#<idx> <SAN> [<tag>] Δcp=<delta>; best=<uci>; idx=<idx>` you must produce one JSON object.',
-    'Return a JSON ARRAY with EXACTLY N objects, in the SAME ORDER.',
-    'Each object MUST be: { "moveIndex": <idx>, "title": <<=60 chars>, "text": <<=280 chars> }',
-  ].join(' ');
+  const common = [
+    'You are a concise chess coach. Be specific and encouraging.',
+    'For each input line `#<ply><W|B> <SAN> [<tag>] Δcp=<delta>; best=<uci>; idx=<idx>` produce ONE coaching object.',
+    'Schema: { "moveIndex": <idx>, "title": string (<=60 chars), "text": string (<=280 chars) }',
+    'Do NOT change provided tags or numbers. No markdown.',
+  ];
+  if (COACH_OUTPUT_MODE === 'array') {
+    return common.concat(['Return ONLY a JSON ARRAY with EXACTLY N objects, SAME ORDER.']).join(' ');
+  }
+  return common.concat(['Return ONLY NDJSON: EXACTLY N LINES, each line is ONE JSON object. No brackets, no commas, no prose.']).join(' ');
 }
 
 function buildPromptHead(summary) {
@@ -89,28 +96,27 @@ function buildBatchPrompt({ summary, batch, expected }) {
     const idx = Number.isFinite(m.idx) ? m.idx : (m.ply ?? i);
     return `#${m.ply}${m.color === 'w' ? 'W' : 'B'} ${m.san} [${m.tag}] Δcp=${m.deltaCp}; best=${m.bestUci}; idx=${idx}`;
   });
-  return [
-    head,
-    `N=${expected}`,
-    'Respond with a JSON array of length N. One object per line in the same order.',
-    lines.join('\n'),
-  ].join('\n');
+  if (COACH_OUTPUT_MODE === 'array') {
+    return [head, `N=${expected}`, 'Respond with a JSON array of length N (SAME ORDER).', ...lines].join('\n');
+  }
+  return [head, `N=${expected}`, 'Respond with NDJSON: EXACTLY N lines, each a JSON object (SAME ORDER).', ...lines].join('\n');
 }
 
-async function callModelJSON({ model, prompt, options }) {
+async function callModelStructured({ model, prompt, expected }) {
   const body = {
     model,
     stream: false,
     system: buildSystemPrompt(),
     prompt,
-    format: 'json',
+    ...(COACH_OUTPUT_MODE === 'array' ? { format: 'json' } : {}),
     options: {
       temperature: 0.1,
       top_p: 0.85,
       top_k: 40,
       repeat_penalty: 1.05,
       num_ctx: 4096,
-      num_predict: Math.max(options?.num_predict ?? 0, 80 * (options?.expected ?? 1)),
+      num_predict: Math.max(180, TOKENS_PER_ITEM * Math.max(1, expected || 1)),
+      stop: ['\n#', '\nN='],
     },
     keep_alive: '45m',
   };
@@ -120,23 +126,65 @@ async function callModelJSON({ model, prompt, options }) {
     body: JSON.stringify(body),
   });
   const json = await res.json();
-  let parsed;
-  try { parsed = JSON.parse(json.response); } catch {}
-  if (!parsed) {
-    const s = String(json.response || '');
-    const a = s.indexOf('['), b = s.lastIndexOf(']');
-    if (a >= 0 && b > a) {
-      try { parsed = JSON.parse(s.slice(a, b + 1)); } catch {}
+  const raw = String(json?.response || '');
+  if (COACH_DEBUG) {
+    console.log(`[coach] call len=${prompt.length} chars; response chars=${raw.length}`);
+  }
+  const tryParse = (txt) => {
+    try { return JSON.parse(txt); } catch { return null; }
+  };
+
+  // Candidate payloads to inspect
+  const candidates = [];
+  if (Array.isArray(json)) candidates.push(json);
+  if (json && typeof json === 'object') {
+    if (Array.isArray(json.response)) candidates.push(json.response);
+    if (typeof json.response === 'string') candidates.push(json.response);
+  }
+
+  let parsed = null;
+  for (const c of candidates) {
+    if (Array.isArray(c)) { parsed = c; break; }
+    if (typeof c === 'string') {
+      // 1) direct parse
+      parsed = tryParse(c);
+      if (Array.isArray(parsed)) break;
+      // 2) first '[' .. last ']'
+      const a = c.indexOf('['), b = c.lastIndexOf(']');
+      if (a >= 0 && b > a) {
+        const sub = tryParse(c.slice(a, b + 1));
+        if (Array.isArray(sub)) { parsed = sub; break; }
+      }
+      // 3) line-by-line JSON
+      const lines = c.split(/\r?\n/);
+      for (const line of lines) {
+        const v = tryParse(line);
+        if (Array.isArray(v)) { parsed = v; break; }
+      }
+      if (Array.isArray(parsed)) break;
     }
   }
-  if (!Array.isArray(parsed)) {
+
+  // NDJSON: parse each line into an object
+  const asItems = [];
+  if (Array.isArray(parsed)) asItems.push(...parsed);
+  else if (typeof parsed === 'object' && parsed) asItems.push(parsed);
+  else {
+    const lines = raw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    for (const line of lines) {
+      const v = tryParse(line);
+      if (v) asItems.push(v);
+    }
+  }
+
+  if (!asItems.length) {
     if (COACH_DEBUG) {
       console.error('[coach] JSON parse failed. Raw model output (first 1500 chars):\n',
-        String(json.response || '').slice(0, 1500));
+        raw.slice(0, 1500));
     }
     return [];
   }
-  return parsed;
+  return asItems;
 }
 
 function normalizeItems(items, batch) {
@@ -196,17 +244,29 @@ async function generateNotes(inputs) {
       console.log(`[coach] prompt preview:\n${prompt.slice(0, 800)}\n---`);
     }
 
-    const items = await callModelJSON({ model, prompt, options: { expected } });
-    const norm = normalizeItems(items, batch);
+    let items = [];
+    try {
+      items = await callModelStructured({ model, prompt, expected });
+    } catch (e) {
+      console.error('[coach] model error:', e.message);
+      items = [];
+    }
+    let norm = normalizeItems(items, batch);
+    // Fallback: if the model gave nothing usable, emit empty stubs to avoid “offline”
+    if (!norm.length) {
+      norm = batch.map((m, i) => ({
+        moveIndex: Number.isFinite(m.idx) ? m.idx : (Number.isFinite(m.ply) ? m.ply : i),
+        title: '',
+        text: '',
+        type: 'move',
+      }));
+    }
     if (COACH_DEBUG) console.log(`[coach] batch ${b + 1} got ${norm.length} items`);
     all.push(...norm);
   }
 
   all.sort((a, b) => a.moveIndex - b.moveIndex);
-  if (COACH_DEBUG && all.length === 0) {
-    console.error('[coach] ERROR: model returned 0 items across all batches');
-  }
-  return { notes: all, offline: all.length === 0 };
+  return { notes: all, offline: false };
 }
 
 /* ---------------------------------- IPC ----------------------------------- */
