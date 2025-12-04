@@ -21,6 +21,7 @@ export function cpFromScore(score: UciScore | null | undefined): number | null {
 /** Centipawn loss for a half-move: how much worse than best for the mover. */
 export function cpLossForMoveSideAware(
   bestBefore: UciScore | null | undefined,
+  // afterScore should be opponent POV (side to move after the move).
   afterScore: UciScore | null | undefined,
   mover: 'W' | 'B'
 ): number | null {
@@ -98,10 +99,8 @@ export function avgCplPerSide(halfMoves: Array<{
 export function accuracyFromAvgCpl(acpl: number | null): number | null {
   if (acpl == null || !isFinite(acpl)) return null;
   const x = Math.max(0, acpl);
-  const k = 35;
-  const p = 1.45;
-  const acc = 100 / (1 + Math.pow(x / k, p));
-  return Math.round(Math.max(35, Math.min(99, acc)));
+  const acc = 100 - 4.5 * Math.sqrt(x);
+  return Math.round(Math.max(28, Math.min(99, acc)));
 }
 
 /** Optional: CPL → qualitative tag aligned with stricter accuracy. */
@@ -114,9 +113,9 @@ export function tagFromLoss(lossCp: number): 'Best' | 'Good' | 'Mistake' | 'Blun
 
 // Piecewise ACPL→ELO anchors (steeper)
 const ACPL_ELO_TABLE: Array<[number, number]> = [
-  [10, 2600], [20, 2400], [30, 2200], [45, 2000],
-  [65, 1800], [90, 1600], [120, 1400], [160, 1200],
-  [210, 1000], [280, 800], [360, 600], [460, 400],
+  [10, 2500], [20, 2200], [30, 1850], [45, 1500],
+  [65, 1250], [90, 1000], [120, 800], [160, 600],
+  [210, 500], [280, 420], [360, 400], [460, 400],
 ];
 
 function clamp(n: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, n)); }

@@ -8,10 +8,11 @@ const https = require('https');
 
 const DEFAULT_MODEL = process.env.COACH_MODEL || 'llama3.2:3b-instruct-q5_K_M';
 const COACH_DEBUG = process.env.COACH_DEBUG === '1';
-const BATCH_PLIES = parseInt(process.env.COACH_BATCH_PLIES || '12', 10); // per-call plies
-// Give the model more headroom per item so it doesn't truncate early
-const TOKENS_PER_ITEM = parseInt(process.env.COACH_TOKENS_PER_ITEM || '140', 10);
-// Force array mode + JSON schema so we *always* parse a JSON array
+// Smaller batches = fewer truncations on small quantized models
+const BATCH_PLIES = parseInt(process.env.COACH_BATCH_PLIES || '6', 10); // per-call plies
+// A little more headroom per item to avoid cutoffs
+const TOKENS_PER_ITEM = parseInt(process.env.COACH_TOKENS_PER_ITEM || '160', 10);
+// Try array first, then fall back to ndjson automatically
 const COACH_OUTPUT_MODE = (process.env.COACH_OUTPUT_MODE || 'array').toLowerCase(); // 'array' or 'ndjson'
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 const TIMEOUT_MS = Number(process.env.COACH_TIMEOUT_MS || 30000);
@@ -107,110 +108,123 @@ function buildBatchPrompt({ summary, batch, expected }) {
   return [head, `N=${expected}`, 'Respond with NDJSON: EXACTLY N lines, each a JSON object (SAME ORDER).', ...lines].join('\n');
 }
 
+function tryParse(s) {
+  try { return JSON.parse(s); } catch { return null; }
+}
+
+function tryParseArrayCandidates(cands) {
+  for (const c of cands) {
+    if (!c) continue;
+    if (Array.isArray(c)) return c;
+    if (typeof c === 'string') {
+      const parsed = tryParse(c);
+      if (Array.isArray(parsed)) return parsed;
+      const a = c.indexOf('['), b = c.lastIndexOf(']');
+      if (a >= 0 && b > a) {
+        const sub = c.slice(a, b + 1);
+        const parsedSub = tryParse(sub);
+        if (Array.isArray(parsedSub)) return parsedSub;
+      }
+    }
+  }
+  return null;
+}
+
 async function callModelStructured({ model, prompt, expected }) {
-  const body = {
+  const baseBody = {
     model,
     stream: false,
     system: buildSystemPrompt(),
     prompt,
-    ...(COACH_OUTPUT_MODE === 'array'
-      ? {
-          // Ask Ollama to produce schema-conformant JSON
-          format: {
-            type: 'json_schema',
-            json_schema: {
-              name: 'CoachNotes',
-              schema: {
-                type: 'array',
-                items: {
-                  type: 'object',
-                  additionalProperties: false,
-                  required: ['moveIndex', 'title', 'text'],
-                  properties: {
-                    moveIndex: { type: 'integer' },
-                    title: { type: 'string', maxLength: 60 },
-                    text: { type: 'string', maxLength: 280 }
-                  }
-                }
-              }
-            }
-          }
-        }
-      : {}),
     options: {
       temperature: 0.1,
       top_p: 0.85,
       top_k: 40,
       repeat_penalty: 1.05,
       num_ctx: 4096,
-      num_predict: Math.max(180, TOKENS_PER_ITEM * Math.max(1, expected || 1)),
+      num_predict: Math.max(240, TOKENS_PER_ITEM * Math.max(1, expected || 1)),
       stop: ['\n#', '\nN='],
     },
     keep_alive: '45m',
   };
-  const res = await fetch(`${OLLAMA_URL}/api/generate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const json = await res.json();
-  const raw = String(json?.response || '');
-  if (COACH_DEBUG) {
-    console.log(`[coach] call len=${prompt.length} chars; response chars=${raw.length}`);
-  }
-  const tryParse = (txt) => {
-    try { return JSON.parse(txt); } catch { return null; }
-  };
 
-  // Candidate payloads to inspect
-  const candidates = [];
-  if (Array.isArray(json)) candidates.push(json);
-  if (json && typeof json === 'object') {
-    if (Array.isArray(json.response)) candidates.push(json.response);
-    if (typeof json.response === 'string') candidates.push(json.response);
+  const attempts = [];
+  if (COACH_OUTPUT_MODE === 'array') {
+    attempts.push({
+      desc: 'array-schema',
+      body: {
+        ...baseBody,
+        format: {
+          type: 'json_schema',
+          json_schema: {
+            name: 'CoachNotes',
+            schema: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['moveIndex', 'title', 'text'],
+                properties: {
+                  moveIndex: { type: 'integer' },
+                  title: { type: 'string', maxLength: 60 },
+                  text: { type: 'string', maxLength: 280 },
+                },
+              },
+            },
+          },
+        },
+      },
+    });
+    attempts.push({ desc: 'array-json', body: { ...baseBody, format: 'json' } });
   }
+  attempts.push({ desc: 'fallback', body: { ...baseBody, format: undefined } });
 
-  let parsed = null;
-  for (const c of candidates) {
-    if (Array.isArray(c)) { parsed = c; break; }
-    if (typeof c === 'string') {
-      // 1) direct parse
-      parsed = tryParse(c);
-      if (Array.isArray(parsed)) break;
-      // 2) first '[' .. last ']'
-      const a = c.indexOf('['), b = c.lastIndexOf(']');
-      if (a >= 0 && b > a) {
-        const sub = tryParse(c.slice(a, b + 1));
-        if (Array.isArray(sub)) { parsed = sub; break; }
-      }
-      // 3) line-by-line JSON
-      const lines = c.split(/\r?\n/);
-      for (const line of lines) {
-        const v = tryParse(line);
-        if (Array.isArray(v)) { parsed = v; break; }
-      }
-      if (Array.isArray(parsed)) break;
+  let lastRawSample = '';
+  for (const attempt of attempts) {
+    const res = await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(attempt.body),
+    });
+    const json = await res.json();
+    const raw = String(json?.response || '');
+    if (!lastRawSample) {
+      const firstStr = raw || (typeof json?.message?.content === 'string' ? json.message.content : '');
+      lastRawSample = firstStr ? firstStr.slice(0, 400) : '';
     }
-  }
+    if (COACH_DEBUG) {
+      console.log(`[coach] call (${attempt.desc}) len=${prompt.length} chars; response chars=${raw.length}`);
+    }
 
-  // NDJSON: parse each line into an object
-  const asItems = [];
-  if (Array.isArray(parsed)) asItems.push(...parsed);
-  else if (typeof parsed === 'object' && parsed) asItems.push(parsed);
-  else {
+    const candidates = [];
+    if (Array.isArray(json)) candidates.push(json);
+    if (json && typeof json === 'object') {
+      if (Array.isArray(json.response)) candidates.push(json.response);
+      if (typeof json.response === 'string') candidates.push(json.response);
+      if (Array.isArray(json.message?.content)) candidates.push(json.message.content);
+      if (typeof json.message?.content === 'string') candidates.push(json.message.content);
+    }
+
+    const parsedArray = tryParseArrayCandidates(candidates);
+    if (Array.isArray(parsedArray)) {
+      return parsedArray.slice(0, expected);
+    }
+
+    // NDJSON-like fallback: parse each line into an object
+    const asItems = [];
     const lines = raw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     for (const line of lines) {
       const v = tryParse(line);
       if (v) asItems.push(v);
     }
+    if (asItems.length) {
+      return asItems.slice(0, expected);
+    }
   }
 
-  if (!asItems.length) {
-    const rawSample = candidates.find((x) => typeof x === 'string') || JSON.stringify(candidates[0] || null);
-    console.error('[coach] model error: LLM returned no valid JSON array; expected:', expected, 'raw sample:', (rawSample || '').toString().slice(0, 400));
-    return [];
-  }
-  return asItems;
+  console.error('[coach] model error: no valid JSON (array/ndjson). expected:', expected, 'raw sample:', lastRawSample || 'null');
+  // Return empty stubs to avoid breaking UI flow
+  return Array.from({ length: Math.max(0, expected | 0) }, (_, i) => ({ moveIndex: i, title: '', text: '' }));
 }
 
 function normalizeItems(items, batch) {

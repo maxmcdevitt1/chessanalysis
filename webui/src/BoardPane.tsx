@@ -56,23 +56,24 @@ type BoardPaneProps = {
 /* --------------------------------- UI Kit -------------------------------- */
 
 const ui = {
-  row: { display: 'flex', gap: 12, flexWrap: 'wrap' as const, justifyContent: 'center' as const },
+  row: { display: 'flex', gap: 14, flexWrap: 'wrap' as const, justifyContent: 'center' as const },
+  col: { display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14 } as React.CSSProperties,
   btn: {
-    padding: '10px 18px',
-    fontSize: 16,
-    lineHeight: '20px',
-    borderRadius: 10,
+    padding: '13px 22px',
+    fontSize: 17,
+    lineHeight: '21px',
+    borderRadius: 12,
     border: '1px solid #565656',
     background: '#2f2f2f',
     color: '#eee',
-    boxShadow: '0 1px 0 rgba(0,0,0,.35)',
+    boxShadow: '0 2px 6px rgba(0,0,0,.35)',
     cursor: 'pointer',
   } as React.CSSProperties,
   btnGhost: {
-    padding: '10px 18px',
-    fontSize: 16,
-    lineHeight: '20px',
-    borderRadius: 10,
+    padding: '13px 22px',
+    fontSize: 17,
+    lineHeight: '21px',
+    borderRadius: 12,
     border: '1px solid #4a4a4a',
     background: '#1f1f1f',
     color: '#ddd',
@@ -95,7 +96,7 @@ function RenderBadge({ tag, size = 24 }: { tag: MoveEvalLite['tag']; size?: numb
  * Fit the board to available space (container width minus eval column),
  * while also respecting the window height so it never shrinks too far.
  */
-function useStableBoardWidth(minPx = 820, maxPx = 1280, initial = 960) {
+function useStableBoardWidth(minPx = 900, maxPx = 1340, initial = 1040) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [w, setW] = useState<number>(initial);
 
@@ -110,7 +111,7 @@ function useStableBoardWidth(minPx = 820, maxPx = 1280, initial = 960) {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
         const availW = Math.floor(entry.contentRect.width - (EVAL_RIGHT_COL + GUTTER));
-        const availH = Math.floor(window.innerHeight - 180); // leave room below board
+        const availH = Math.floor(window.innerHeight - 140); // leave more vertical room for a taller board
         const target = Math.max(minPx, Math.min(maxPx, Math.min(availW, availH)));
         const even = Math.floor(target / 2) * 2; // crisp squares
         setW(prev => (Math.abs(prev - even) >= 2 ? even : prev));
@@ -247,7 +248,7 @@ export default function BoardPane(props: BoardPaneProps) {
   return (
     <div style={{ display:'flex', gap:24, alignItems:'flex-start', maxWidth:'min(1500px, 96vw)', margin:'0 auto' }}>
       {/* LEFT: board + controls */}
-      <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:14 }}>
+      <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:14, paddingTop: 10 }}>
         <div ref={containerRef} style={{ position:'relative', width: boardWidth, margin:'0 auto' }}>
           <Chessboard
             id="analysis"
@@ -278,16 +279,23 @@ export default function BoardPane(props: BoardPaneProps) {
           )}
         </div>
 
-        {/* Controls under the board */}
-        <div style={{ ...ui.col, width: boardWidth, gap: 12 }}>
-          <div style={{ ...ui.row, justifyContent:'center', gap: 8, flexWrap: 'wrap' }}>
+        {/* Optional sparkline under the board */}
+        {props.showEvalGraph !== false && evalSeries && evalSeries.length > 0 ? (
+          <div style={{ width: boardWidth, padding:10, border:'1px solid #3a3a3a', borderRadius:10 }}>
+            <EvalSparkline series={evalSeries} onClickIndex={(i)=>props.onRebuildTo(i+1)} />
+          </div>
+        ) : null}
+
+        {/* Controls at the bottom of the column */}
+        <div style={{ ...ui.col, width: boardWidth, gap: 12, marginTop: 6 }}>
+          <div style={{ ...ui.row, justifyContent:'center', gap: 10, flexWrap: 'wrap' }}>
             <button style={ui.btnGhost} onClick={() => onRebuildTo(0)} disabled={ply === 0}>First</button>
             <button style={ui.btnGhost} onClick={() => onRebuildTo(Math.max(0, ply - 1))} disabled={ply === 0}>Back</button>
             <button style={ui.btnGhost} onClick={() => onRebuildTo(Math.min(movesUci.length, ply + 1))} disabled={ply >= movesUci.length}>Forward</button>
             <button style={ui.btnGhost} onClick={() => onRebuildTo(movesUci.length)} disabled={ply >= movesUci.length}>End</button>
             <button style={ui.btnGhost} onClick={onNewGame}>New</button>
           </div>
-          <div style={{ ...ui.row, justifyContent:'center', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ ...ui.row, justifyContent:'center', gap: 12, flexWrap: 'wrap' }}>
             <button style={ui.btn} onClick={onEngineMove} disabled={engineBusy}>Engine Move</button>
             <label style={{ ...ui.checkboxLabel }}>
               <input type="checkbox" checked={autoReply} onChange={e => setAutoReply(e.target.checked)} />
@@ -314,13 +322,6 @@ export default function BoardPane(props: BoardPaneProps) {
             </button>
           </div>
         </div>
-
-        {/* Optional sparkline under the board */}
-        {props.showEvalGraph !== false && evalSeries && evalSeries.length > 0 ? (
-          <div style={{ width: boardWidth, padding:10, border:'1px solid #3a3a3a', borderRadius:10 }}>
-            <EvalSparkline series={evalSeries} onClickIndex={(i)=>props.onRebuildTo(i+1)} />
-          </div>
-        ) : null}
       </div>
 
       {/* RIGHT: eval bar column — exactly next to the board, slightly shorter than board */}

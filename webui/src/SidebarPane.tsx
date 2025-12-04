@@ -229,6 +229,26 @@ const S = {
     background: 'linear-gradient(180deg, #1d1a17 0%, #141210 100%)',
     boxShadow: '0 10px 28px rgba(0,0,0,0.28)',
   },
+  singleBox: {
+    border: '1px solid #2b2b2b',
+    borderRadius: 12,
+    padding: 16,
+    background: 'linear-gradient(180deg, #1d1a17 0%, #141210 100%)',
+    boxShadow: '0 10px 28px rgba(0,0,0,0.28)',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 16,
+  },
+  subSection: {
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 8,
+  },
+  divider: {
+    height: 1,
+    background: '#2b2b2b',
+    margin: '4px 0',
+  },
 
   title: {
     fontWeight: 700 as const,
@@ -350,6 +370,33 @@ export default function SidebarPane(props: SidebarProps) {
     Math.abs(v - effElo) < Math.abs(closest - effElo) ? v : closest
   , ELO_CHOICES[0]);
 
+  const deltaEvalForMove = (m: any): number | null => {
+    const side = (m.side === 'White' || m.side === 'W') ? 'W' : 'B';
+    const afterWhite = (() => {
+      if (typeof m?.cpAfterWhite === 'number') return m.cpAfterWhite;
+      if (typeof m?.cpAfter === 'number') {
+        // cpAfter is stored as opponent POV after the move
+        return side === 'W' ? -m.cpAfter : m.cpAfter;
+      }
+      return null;
+    })();
+    const beforeWhite = (() => {
+      if (typeof m?.cpBefore === 'number') return m.cpBefore; // White POV
+      if (typeof m?.bestCpBefore === 'number') {
+        return side === 'W' ? m.bestCpBefore : -m.bestCpBefore;
+      }
+      return null;
+    })();
+    if (afterWhite == null || beforeWhite == null) return null;
+    return afterWhite - beforeWhite;
+  };
+
+  const formatDelta = (cpDelta: number | null) => {
+    if (cpDelta == null || !isFinite(cpDelta)) return '—';
+    const pawns = cpDelta / 100;
+    return `${pawns > 0 ? '+' : ''}${pawns.toFixed(1)}`;
+  };
+
   async function saveFile(defaultPath: string, ext: 'pgn' | 'json', content: string) {
     try {
       if ((window as any).electron?.invoke) {
@@ -421,235 +468,244 @@ export default function SidebarPane(props: SidebarProps) {
 
       {/* ---------- Scrollable content ---------- */}
       <div style={S.scroll}>
-        {/* Commentary */}
-        <div style={S.section}>
-          {openingText
-            ? <div>{openingText}</div>
-            : <div style={S.small}><em>Make a move or load a PGN to see commentary.</em></div>}
-      </div>
-
-      {/* Coach */}
-      <div style={S.section}>
-        <div style={S.title}>Coach</div>
-        <div style={{ display:'flex', gap:8, marginBottom:8 }}>
-            <button
-              style={{ ...S.button, opacity: coachBusy ? 0.6 : 1, pointerEvents: coachBusy ? 'none' : 'auto' }}
-              onClick={() => onGenerateNotes && onGenerateNotes()}
-              title="Generate per-move coach review"
-            >
-              {coachBusy ? 'Generating…' : 'Generate notes'}
-            </button>
+        <div style={S.singleBox}>
+          {/* Commentary */}
+          <div style={S.subSection}>
+            <div style={S.title}>Commentary</div>
+            {openingText
+              ? <div>{openingText}</div>
+              : <div style={S.small}><em>Make a move or load a PGN to see commentary.</em></div>}
           </div>
-          {Array.isArray(coachNotes) && coachNotes.length > 0 ? (
-            <CoachMoveList
-              notes={coachNotes}
-              currentPly={currentPly}
-              onJumpToPly={onJumpToPly || (() => {})}
-              style={{ maxHeight: 220 }}
-            />
-          ) : (
-            <div style={{ ...S.small }}>No coach notes yet.</div>
-          )}
-        </div>
 
-        {/* Engine Strength (controlled from App) */}
-        <div style={S.section}>
-          <div style={S.title}>Engine Strength</div>
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-            <select
-              style={S.select}
-              value={selectedElo}
-              onChange={(e) => {
-                const chosenElo = Number(e.target.value);
-                const level = strengthFromElo(chosenElo);
-                onEngineStrengthChange(level);
-              }}
-              title="Select engine Elo (mapped to internal strength)"
-            >
-              {ELO_CHOICES.map((elo) => (
-                <option key={elo} value={elo}>{elo} Elo</option>
-              ))}
-            </select>
-            <span style={S.small}>Effective: {effElo} Elo</span>
-            <span style={{ ...S.small, marginLeft: 6 }}>Advanced</span>
-          </div>
-        </div>
+          <div style={S.divider} />
 
-        {/* PGN controls */}
-        <div style={S.section}>
-          <div style={S.title}>PGN</div>
-          <textarea
-            rows={6}
-            placeholder="Paste PGN here..."
-            onBlur={(e) => onLoadPgnText(e.target.value)}
-            style={{ ...S.input, width: '100%', resize: 'vertical' as const }}
-          />
-          <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 10, flexWrap: 'wrap' }}>
-            <button style={S.button} onClick={onAnalyze} disabled={analyzing}>Analyze PGN</button>
-            {onAnalyzeFast && (
-              <button style={S.button} onClick={onAnalyzeFast} disabled={analyzing}>Fast</button>
-            )}
-            <button style={S.button} onClick={onStopAnalyze} disabled={!analyzing}>Stop</button>
-            <label style={{ marginLeft: 'auto', cursor: 'pointer' }}>
-              <input
-                type="file"
-                accept=".pgn,.txt"
-                style={{ display: 'none' }}
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) onLoadPgnFile(f);
-                }}
+          {/* Coach */}
+          <div style={S.subSection}>
+            <div style={S.title}>Coach</div>
+            <div style={{ display:'flex', gap:8 }}>
+              <button
+                style={{ ...S.button, opacity: coachBusy ? 0.6 : 1, pointerEvents: coachBusy ? 'none' : 'auto' }}
+                onClick={() => onGenerateNotes && onGenerateNotes()}
+                title="Generate per-move coach review"
+              >
+                {coachBusy ? 'Generating…' : 'Generate notes'}
+              </button>
+            </div>
+            {Array.isArray(coachNotes) && coachNotes.length > 0 ? (
+              <CoachMoveList
+                notes={coachNotes}
+                currentPly={currentPly}
+                onJumpToPly={onJumpToPly || (() => {})}
+                style={{ maxHeight: 220 }}
               />
-              <span style={{ textDecoration: 'underline' }}>Choose File</span>
-            </label>
+            ) : (
+              <div style={{ ...S.small }}>No coach notes yet.</div>
+            )}
           </div>
-          {analyzing && (
-            <div style={{ ...S.small, marginTop: 8 }}>
-              Progress: {progress ?? 0}%
+
+          <div style={S.divider} />
+
+          {/* Engine Strength (controlled from App) */}
+          <div style={S.subSection}>
+            <div style={S.title}>Engine Strength</div>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+              <select
+                style={S.select}
+                value={selectedElo}
+                onChange={(e) => {
+                  const chosenElo = Number(e.target.value);
+                  const level = strengthFromElo(chosenElo);
+                  onEngineStrengthChange(level);
+                }}
+                title="Select engine Elo (mapped to internal strength)"
+              >
+                {ELO_CHOICES.map((elo) => (
+                  <option key={elo} value={elo}>{elo} Elo</option>
+                ))}
+              </select>
+              <span style={S.small}>Effective: {effElo} Elo</span>
+              <span style={{ ...S.small, marginLeft: 6 }}>Advanced</span>
             </div>
+          </div>
+
+          <div style={S.divider} />
+
+          {/* PGN controls */}
+          <div style={S.subSection}>
+            <div style={S.title}>PGN</div>
+            <textarea
+              rows={6}
+              placeholder="Paste PGN here..."
+              onBlur={(e) => onLoadPgnText(e.target.value)}
+              style={{ ...S.input, width: '100%', resize: 'vertical' as const }}
+            />
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 10, flexWrap: 'wrap' }}>
+              <button style={S.button} onClick={onAnalyze} disabled={analyzing}>Analyze PGN</button>
+              {onAnalyzeFast && (
+                <button style={S.button} onClick={onAnalyzeFast} disabled={analyzing}>Fast</button>
+              )}
+              <button style={S.button} onClick={onStopAnalyze} disabled={!analyzing}>Stop</button>
+              <label style={{ marginLeft: 'auto', cursor: 'pointer' }}>
+                <input
+                  type="file"
+                  accept=".pgn,.txt"
+                  style={{ display: 'none' }}
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) onLoadPgnFile(f);
+                  }}
+                />
+                <span style={{ textDecoration: 'underline' }}>Choose File</span>
+              </label>
+            </div>
+            {analyzing && (
+              <div style={{ ...S.small, marginTop: 8 }}>
+                Progress: {progress ?? 0}%
+              </div>
+            )}
+          </div>
+
+          <div style={S.divider} />
+
+          {/* Game Review summary */}
+          <div style={S.subSection}>
+            <div style={S.title}>Game Review</div>
+
+            {/* Accuracy + CPL */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 10 }}>
+              <div>
+                White accuracy:{' '}
+                <strong>{review?.whiteAcc != null ? `${Math.round(review.whiteAcc)}%` : '—'}</strong>
+              </div>
+              <div>
+                Black accuracy:{' '}
+                <strong>{review?.blackAcc != null ? `${Math.round(review.blackAcc)}%` : '—'}</strong>
+              </div>
+              <div>
+                Avg CPL (W/B):{' '}
+                <strong>{review?.avgCplW != null ? Math.round(review.avgCplW) : '—'}</strong> /{' '}
+                <strong>{review?.avgCplB != null ? Math.round(review.avgCplB) : '—'}</strong>
+              </div>
+            </div>
+
+            {/* Move quality counts */}
+            <div style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: 10,
+              padding: '8px 10px',
+              background: '#0f0f0f',
+              border: '1px solid #222',
+              borderRadius: 8,
+            }}>
+              <div>
+                <div style={S.small}>White moves</div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
+                  <Pill label="Best" value={review?.quality?.W?.best} />
+                  <Pill label="Good" value={review?.quality?.W?.good} />
+                  <Pill label="Inacc" value={review?.quality?.W?.inaccuracy ?? review?.quality?.W?.inacc} />
+                  <Pill label="Mist" value={review?.quality?.W?.mistake} />
+                  <Pill label="Blun" value={review?.quality?.W?.blunder} />
+                </div>
+              </div>
+              <div>
+                <div style={S.small}>Black moves</div>
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
+                  <Pill label="Best" value={review?.quality?.B?.best} />
+                  <Pill label="Good" value={review?.quality?.B?.good} />
+                  <Pill label="Inacc" value={review?.quality?.B?.inaccuracy ?? review?.quality?.B?.inacc} />
+                  <Pill label="Mist" value={review?.quality?.B?.mistake} />
+                  <Pill label="Blun" value={review?.quality?.B?.blunder} />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ ...S.small, marginTop: 8 }}>
+              Accuracy is based on average centipawn loss (lower CPL → higher accuracy).
+            </div>
+          </div>
+
+          {(gameEloWhite ?? gameEloBlack) != null && (
+            <>
+              <div style={S.divider} />
+              <div style={S.subSection}>
+                <div style={S.title}>Game Elo (estimate)</div>
+                <div style={{ display: 'flex', gap: 12 }}>
+                  <div style={S.small}>White: {gameEloWhite != null ? Math.round(gameEloWhite) : '—'}</div>
+                  <div style={S.small}>Black: {gameEloBlack != null ? Math.round(gameEloBlack) : '—'}</div>
+                </div>
+              </div>
+            </>
+          )}
+
+          <div style={S.divider} />
+
+          {/* Export panel */}
+          <div style={S.subSection}>
+            <div style={S.title}>Export</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              <button style={S.button} onClick={exportPGN}>Export PGN</button>
+              <button style={S.button} onClick={exportAnnotatedPGN}>PGN (annotated)</button>
+              <button style={S.button} onClick={exportJSON}>Export JSON</button>
+            </div>
+          </div>
+
+          {showMoves && (
+            <>
+              <div style={S.divider} />
+              <div style={S.subSection}>
+                <div style={S.title}>Moves</div>
+
+                {/* Optional: sticky table header for long lists */}
+                <div style={{ maxHeight: 480, overflowY: 'auto' }}>
+                  <table style={S.table}>
+                    <thead>
+                      <tr>
+                        <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>#</th>
+                        <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Side</th>
+                        <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>SAN</th>
+                        <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Best</th>
+                        <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Eval</th>
+                        <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Icon</th>
+                        <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Tag</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {moveEvals.map((m, i) => {
+                        const isCurrent = i === ply - 1;
+                        const isOpening = (i < bookMask.length ? bookMask[i] : i < bookDepth);
+                        const iconTag = isOpening ? 'Book' : (m.tag || '');
+                        const labelTag = isOpening ? 'Opening' : (m.tag || '');
+                        return (
+                          <tr
+                            key={i}
+                            onClick={() => onRebuildTo(i + 1)}
+                            style={{
+                              cursor: 'pointer',
+                              background: isCurrent ? '#1b1b1b' : 'transparent',
+                            }}
+                          >
+                            <td style={S.thtd}>{m.moveNo}</td>
+                            <td style={S.thtd}>{m.side === 'White' ? 'W' : 'B'}</td>
+                            <td style={S.thtd}>{m.san}</td>
+                            <td style={S.thtd}>{m.best || ''}</td>
+                            <td style={S.thtd}>
+                              {formatDelta(deltaEvalForMove(m))}
+                            </td>
+                            <td style={S.thtd}>
+                              <TagIcon tag={iconTag} size={20} />
+                            </td>
+                            <td style={S.thtd}>{labelTag}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </>
           )}
         </div>
-
-        {/* Game Review summary */}
-        <div style={S.section}>
-          <div style={S.title}>Game Review</div>
-
-          {/* Accuracy + CPL */}
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 10 }}>
-            <div>
-              White accuracy:{' '}
-              <strong>{review?.whiteAcc != null ? `${Math.round(review.whiteAcc)}%` : '—'}</strong>
-            </div>
-            <div>
-              Black accuracy:{' '}
-              <strong>{review?.blackAcc != null ? `${Math.round(review.blackAcc)}%` : '—'}</strong>
-            </div>
-            <div>
-              Avg CPL (W/B):{' '}
-              <strong>{review?.avgCplW != null ? Math.round(review.avgCplW) : '—'}</strong> /{' '}
-              <strong>{review?.avgCplB != null ? Math.round(review.avgCplB) : '—'}</strong>
-            </div>
-          </div>
-
-          {/* Move quality counts */}
-          <div style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 1fr',
-            gap: 10,
-            padding: '8px 10px',
-            background: '#0f0f0f',
-            border: '1px solid #222',
-            borderRadius: 8,
-          }}>
-            <div>
-              <div style={S.small}>White moves</div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
-                <Pill label="Best" value={review?.quality?.W?.best} />
-                <Pill label="Good" value={review?.quality?.W?.good} />
-                <Pill label="Inacc" value={review?.quality?.W?.inaccuracy ?? review?.quality?.W?.inacc} />
-                <Pill label="Mist" value={review?.quality?.W?.mistake} />
-                <Pill label="Blun" value={review?.quality?.W?.blunder} />
-              </div>
-            </div>
-            <div>
-              <div style={S.small}>Black moves</div>
-              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
-                <Pill label="Best" value={review?.quality?.B?.best} />
-                <Pill label="Good" value={review?.quality?.B?.good} />
-                <Pill label="Inacc" value={review?.quality?.B?.inaccuracy ?? review?.quality?.B?.inacc} />
-                <Pill label="Mist" value={review?.quality?.B?.mistake} />
-                <Pill label="Blun" value={review?.quality?.B?.blunder} />
-              </div>
-            </div>
-          </div>
-
-          <div style={{ ...S.small, marginTop: 8 }}>
-            Accuracy is based on average centipawn loss (lower CPL → higher accuracy).
-          </div>
-        </div>
-
-        {/* Game Elo estimate */}
-        {(gameEloWhite ?? gameEloBlack) != null && (
-          <div style={S.section}>
-            <div style={S.title}>Game Elo (estimate)</div>
-            <div style={{ display: 'flex', gap: 12 }}>
-              <div style={S.small}>White: {gameEloWhite != null ? Math.round(gameEloWhite) : '—'}</div>
-              <div style={S.small}>Black: {gameEloBlack != null ? Math.round(gameEloBlack) : '—'}</div>
-            </div>
-          </div>
-        )}
-
-        {/* Export panel */}
-        <div style={S.section}>
-          <div style={S.title}>Export</div>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            <button style={S.button} onClick={exportPGN}>Export PGN</button>
-            <button style={S.button} onClick={exportAnnotatedPGN}>PGN (annotated)</button>
-            <button style={S.button} onClick={exportJSON}>Export JSON</button>
-          </div>
-        </div>
-
-        {showMoves && (
-          <div style={S.section}>
-            <div style={S.title}>Moves</div>
-
-            {/* Optional: sticky table header for long lists */}
-            <div style={{ maxHeight: 480, overflowY: 'auto' }}>
-              <table style={S.table}>
-                <thead>
-                  <tr>
-                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>#</th>
-                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Side</th>
-                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>SAN</th>
-                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Best</th>
-                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Eval</th>
-                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Icon</th>
-                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Tag</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {moveEvals.map((m, i) => {
-                    const isCurrent = i === ply - 1;
-                    const isOpening = (i < bookMask.length ? bookMask[i] : i < bookDepth);
-                    const iconTag = isOpening ? 'Book' : (m.tag || '');
-                    const labelTag = isOpening ? 'Opening' : (m.tag || '');
-                    return (
-                      <tr
-                        key={i}
-                        onClick={() => onRebuildTo(i + 1)}
-                        style={{
-                          cursor: 'pointer',
-                          background: isCurrent ? '#1b1b1b' : 'transparent',
-                        }}
-                      >
-                        <td style={S.thtd}>{m.moveNo}</td>
-                        <td style={S.thtd}>{m.side === 'White' ? 'W' : 'B'}</td>
-                        <td style={S.thtd}>{m.san}</td>
-                        <td style={S.thtd}>{m.best || ''}</td>
-                        <td style={S.thtd}>
-                          {(() => {
-                            // Show evaluation AFTER the move in White POV (not cumulative CPL).
-                            const whiteAfter =
-                              typeof m.cpAfterWhite === 'number'
-                                ? m.cpAfterWhite
-                                : (typeof m.cpAfter === 'number'
-                                    ? ((m.side === 'White' || m.side === 'W') ? -m.cpAfter : m.cpAfter)
-                                    : null);
-                            return whiteAfter == null ? '—' : (whiteAfter / 100).toFixed(1);
-                          })()}
-                        </td>
-                        <td style={S.thtd}>
-                          <TagIcon tag={iconTag} size={20} />
-                        </td>
-                        <td style={S.thtd}>{labelTag}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
       </div>
       {/* ---------- /scroll ---------- */}
     </aside>

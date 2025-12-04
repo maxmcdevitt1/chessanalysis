@@ -87,14 +87,28 @@ function withAutoQueen(uci: string, game: Chess): string {
   return uci;
 }
 
-// last CP from infos (supports both {type:'cp',score} and {cp})
-function lastCp(infos?: any[]): number | null {
+function mateToCp(mateVal: number | null | undefined): number | null {
+  if (mateVal == null || !isFinite(mateVal)) return null;
+  const sign = mateVal >= 0 ? 1 : -1;
+  return sign * (10000 - Math.min(99, Math.abs(mateVal)) * 100);
+}
+
+// last CP or mate-converted CP from infos (supports {cp} or {mate})
+function lastScoreCp(infos?: any[]): number | null {
   if (!infos?.length) return null;
   for (let i = infos.length - 1; i >= 0; i--) {
     const it = infos[i];
     if (typeof it?.cp === 'number') return it.cp;
+    if (typeof it?.mate === 'number') {
+      const v = mateToCp(it.mate);
+      if (v != null) return v;
+    }
     if (it?.type === 'cp' && Number.isFinite(Number(it.score))) {
       return Number(it.score);
+    }
+    if (it?.type === 'mate' && typeof it.score === 'number') {
+      const v = mateToCp(it.score);
+      if (v != null) return v;
     }
   }
   return null;
@@ -105,7 +119,7 @@ function lastCp(infos?: any[]): number | null {
 // Map UI strength 1..20 → display Elo 400..2500
 function uiEloFromStrength(n: number) {
   const s = Math.max(1, Math.min(20, n));
-  return Math.round(400 + (s - 1) * ((2500- 400) / 19));
+  return Math.round(400 + (s - 1) * ((2500 - 400) / 19));
 }
 
 // Reply movetime: fast and shallow at low Elo, modest at high Elo.
@@ -163,12 +177,16 @@ function positionComplexity(fen: string): { nMoves: number; nCaps: number; nChec
 // We scale the base rate by a multiplier derived from branching factor and tactics.
 function blunderProbability(uiElo: number, cx: { nMoves: number; nCaps: number; nChecks: number }) {
   let base =
-    uiElo <= 500  ? 0.30 :
-    uiElo <= 800  ? 0.20 :
-    uiElo <= 1200 ? 0.08 :
-    uiElo <= 1400 ? 0.05 : 0.02;
+    uiElo <= 500  ? 0.12 :
+    uiElo <= 800  ? 0.10 :
+    uiElo <= 1200 ? 0.05 :
+    uiElo <= 1400 ? 0.035 : 0.015;
 
-  const eloScale = uiElo < 1000 ? 1.0 : uiElo < 1300 ? 0.8 : uiElo < 1600 ? 0.6 : 0.4;
+  const eloScale =
+    uiElo < 900  ? 1.0 :
+    uiElo < 1100 ? 0.8 :
+    uiElo < 1400 ? 0.5 :
+    uiElo < 1700 ? 0.35 : 0.25;
   const bigBranch   = cx.nMoves >= 35 ? 0.50 : cx.nMoves >= 28 ? 0.30 : cx.nMoves >= 22 ? 0.15 : 0.0;
   const manyCaps    = cx.nCaps  >= 8  ? 0.30 : cx.nCaps  >= 5  ? 0.20 : cx.nCaps  >= 3  ? 0.10 : 0.0;
   const manyChecks  = cx.nChecks>= 3  ? 0.20 : cx.nChecks>= 2  ? 0.12 : cx.nChecks>= 1  ? 0.06 : 0.0;
@@ -200,23 +218,31 @@ function afterToMoverPOV(m: any): number | null {
 // Conservative accuracy model similar to common ACPL→accuracy approximations.
 function accFromAcplConservative(acpl: number | null): number | null {
   if (acpl == null || !isFinite(acpl)) return null;
-  const raw = 103 - 2 * Math.sqrt(Math.max(0, acpl));
-  return Math.max(0, Math.min(100, raw));
+  const x = Math.max(0, acpl);
+  // Moderately punitive: small ACPL trims a few points, larger ACPL drops faster.
+  const raw = 100 - 4.5 * Math.sqrt(x);
+  return Math.max(0, Math.min(99, Math.round(raw)));
 }
 
 type Buckets = { inacc: number; mistakes: number; blunders: number };
 function estimateEloConservative(acpl: number | null, buckets: Buckets): number | null {
   if (acpl == null || !isFinite(acpl)) return null;
   const { inacc, mistakes, blunders } = buckets;
-  const base = 2200 - 7 * acpl - 10 * inacc - 30 * mistakes - 60 * blunders;
-  return Math.max(600, Math.min(2400, Math.round(base)));
+  // Use the same steep ACPL→accuracy curve to anchor Elo, then penalize mistakes hard.
+  const acc = accFromAcplConservative(acpl) ?? 0; // 0..99
+  const accScale = Math.max(0, Math.min(1, acc / 100));
+  // Base Elo from accuracy (curved so it drops fast): 400..2600
+  let base = 400 + Math.pow(accScale, 2) * 2200;
+  // Extra penalty for raw ACPL and bucketed mistakes/blunders
+  base -= (acpl * 8) + (inacc * 25) + (mistakes * 70) + (blunders * 140);
+  return Math.max(400, Math.min(2400, Math.round(base)));
 }
 
 // Bucket losses (centipawns) into rough severity levels independent of tags.
 function bucketFromLossCp(lossCp: number): 'ok'|'inacc'|'mistake'|'blunder' {
-  if (lossCp <= 50) return 'ok';        // ≤0.50 pawns
-  if (lossCp <= 150) return 'inacc';    // 0.51–1.50
-  if (lossCp <= 300) return 'mistake';  // 1.51–3.00
+  if (lossCp <= 15) return 'ok';        // ≤0.50 pawns
+  if (lossCp <= 500) return 'inacc';    // 0.51–1.50
+  if (lossCp <= 100) return 'mistake';  // 1.51–3.00
   return 'blunder';                      // >3.00
 }
 
@@ -240,6 +266,35 @@ function pickNotBestLegalUci(fen: string, best: string | undefined): string | nu
     if (!pool.length) return null;
     return pool[Math.floor(Math.random() * pool.length)];
   } catch { return null; }
+}
+
+// For low Elo, occasionally skip the book/best move in the first dozen plies.
+// Probability is lower for 1000–1200 Elo and ramps up only after a few plies
+// so weaker bots still play some basic opening moves.
+function earlyGameDeviationProb(elo: number, plyCount: number): number {
+  if (elo >= 1200) return 0;
+  // Base probability by Elo (weaker -> higher)
+  let base: number;
+  if (elo <= 900) base = 0.15;
+  else if (elo >= 1150) base = 0.03;
+  else {
+    const t = (elo - 900) / 250; // 0..1 between 900-1150
+    base = 0.15 - t * (0.15 - 0.03); // 0.15 -> 0.03
+  }
+  // Delay deviation until later plies; ramp from ply 8 to 14.
+  const ramp = Math.max(0, Math.min(1, (plyCount - 8) / 6)); // 0 at ply<=8, 1 at ply>=14
+  return base * ramp;
+}
+
+function humanStyleForElo(elo: number) {
+  if (elo > 1500) return null;
+  const t = Math.max(0, Math.min(1, (1500 - elo) / 800)); // 0 at 1500, 1 at 700
+  return {
+    temperature: 0.65 + 0.15 * t,              // 0.65–0.80
+    maxPickDeltaCp: elo <= 1200 ? 100 : 80,    // allow more near-equal picks at low Elo
+    blunderRate: 0.015 + 0.06 * t,             // ~0.075 at 700, ~0.04 at 1200, ~0.015 at 1500
+    blunderMaxCp: 220,
+  };
 }
 
 /* ------------------------------ engine gate ------------------------------ */
@@ -307,7 +362,7 @@ function sameBaseMove(a?: string | null, b?: string | null): boolean {
 
 function severityTag(cpl: number | null): MoveEval['tag'] {
   if (cpl == null) return 'Good';
-  if (cpl <= 30) return 'Good';
+  if (cpl <= 25) return 'Good';
   if (cpl <= 80) return 'Mistake';
   return 'Blunder';
 }
@@ -508,10 +563,10 @@ export default function App() {
         const elo = uiEloFromStrength(engineStrength);
         const evalMs = eloToEvalMovetimeMs(elo);
         const res = await withTimeout(
-          analyzeFenSafe(gameRef.current.fen(), { movetimeMs: evalMs, multiPv: 1 }),
+          analyzeFenSafe(gameRef.current.fen(), { movetimeMs: evalMs, multiPv: 2 }),
           evalMs + 1500
         );
-        const cp = lastCp(res?.infos);
+        const cp = lastScoreCp(res?.infos);
         if (evalReqId.current === id) {
           const turn = gameRef.current.turn();
           setEvalCp(cp == null ? null : (turn === 'w' ? cp : -cp));
@@ -586,7 +641,7 @@ export default function App() {
           );
         } catch { before = null; }
 
-        const bestCp = lastCp(before?.infos);
+        const bestCp = lastScoreCp(before?.infos);
         const bestMoveUci = (before?.bestMove || null) as string | null;
 
         // apply played move
@@ -594,6 +649,7 @@ export default function App() {
         const mv = safeMove(g, playedUci);
         const san = mv?.san || '(?)';
         const fenAfter = g.fen();
+        const deliveredMate = g.isCheckmate();
 
         // AFTER
         let after: any = null;
@@ -604,7 +660,7 @@ export default function App() {
           );
         } catch { after = null; }
 
-        const afterCpRaw = lastCp(after?.infos);
+        const afterCpRaw = lastScoreCp(after?.infos);
 
         const mover = i % 2 === 0 ? 'w' : 'b';
         const bestForMover = bestCp == null ? null : bestCp;
@@ -614,24 +670,32 @@ export default function App() {
           bestForMover == null ? null : (mover === 'w' ? bestForMover : -bestForMover);
 
         // Store cpAfter as opponent-POV (raw engine output after the move)
-        const cpAfterStored = afterCpRaw;
+        let cpAfterStored = afterCpRaw;
 
-        const cpAfterWhite =
+        let cpAfterWhite =
           afterForMover == null ? null : (mover === 'w' ? afterForMover : -afterForMover);
 
         let cpl: number | null = null;
-        if (bestForMover != null && afterForMover != null) {
+        if (deliveredMate) {
+          // Checkmate delivered: zero loss and maximal eval swing
+          cpl = 0;
+          cpAfterStored = mover === 'w' ? -9900 : 9900; // opponent POV after move
+          cpAfterWhite = mover === 'w' ? 9900 : -9900;
+        } else if (bestForMover != null && afterForMover != null) {
           cpl = bestForMover - afterForMover;
           if (cpl < 0) cpl = 0;
         }
 
         const seqBefore = movesUci.slice(0, i);
         const candidatesUci = normalizeBookToUci(nextBookMoves(seqBefore), i, movesUci);
-        const isBookMove = Array.isArray(candidatesUci) && candidatesUci.includes(playedUci);
+        let isBookMove = Array.isArray(candidatesUci) && candidatesUci.includes(playedUci);
         const playedIsBest = sameBaseMove(playedUci, bestMoveUci);
+        // If the move dumps significant CPL, don't treat it as book even if it appears in the tree.
+        if (isBookMove && cpl != null && cpl >= 50) isBookMove = false;
 
         let tag: MoveEval['tag'];
-        if (isBookMove) tag = 'Book';
+        if (deliveredMate) tag = 'Best';
+        else if (isBookMove) tag = 'Book';
         else if (playedIsBest && cpl === 0 && bestForMover != null) tag = 'Best';
         else tag = severityTag(cpl);
 
@@ -695,6 +759,7 @@ export default function App() {
         uci: string;
         san: string;
         side: 'White' | 'Black';
+        isMate: boolean;
       }> = [];
       const g = new Chess();
       for (let i = 0; i < movesUci.length; i++) {
@@ -708,6 +773,7 @@ export default function App() {
           uci: movesUci[i],
           san: mv.san || '(?)',
           side: i % 2 === 0 ? 'White' : 'Black',
+          isMate: g.isCheckmate(),
         });
       }
       if (!seq.length) return;
@@ -744,17 +810,23 @@ export default function App() {
           : (info.side === 'White' ? -afterOpponent : afterOpponent);
 
         let cpl: number | null = null;
-        if (bestForMover != null && afterOpponent != null) {
-          cpl = Math.max(0, bestForMover - afterOpponent);
+        if (info.isMate) {
+          cpl = 0;
+        } else if (bestForMover != null && afterOpponent != null) {
+          const afterMover = -afterOpponent; // flip opponent POV to mover POV
+          cpl = Math.max(0, bestForMover - afterMover);
         }
 
         const seqBefore = movesUci.slice(0, i);
         const candidatesUci = normalizeBookToUci(nextBookMoves(seqBefore), i, movesUci);
-        const isBookMove = Array.isArray(candidatesUci) && candidatesUci.includes(info.uci);
+        let isBookMove = Array.isArray(candidatesUci) && candidatesUci.includes(info.uci);
         const playedIsBest = sameBaseMove(info.uci, bestMoveUci);
+        // Do not mark as book if CPL is large even when tree contains it.
+        if (isBookMove && cpl != null && cpl >= 50) isBookMove = false;
 
         let tag: MoveEval['tag'];
-        if (isBookMove) tag = 'Book';
+        if (info.isMate) tag = 'Best';
+        else if (isBookMove) tag = 'Book';
         else if (playedIsBest && cpl === 0 && bestForMover != null) tag = 'Best';
         else tag = severityTag(cpl);
 
@@ -810,18 +882,33 @@ export default function App() {
       const fenNow = g.fen();
       const elo = uiEloFromStrength(engineStrength);
       const movetimeMs = eloToMovetimeMs(elo);
+      const humanStyle = humanStyleForElo(elo);
 
       const res = await withTimeout(
-        moveWeakSafe(fenNow, { movetimeMs, multiPv: 2 }),
+        moveWeakSafe(fenNow, {
+          movetimeMs,
+          multiPv: 4,
+          humanMode: !!humanStyle,
+          human: humanStyle || undefined,
+        }),
         Math.max(8000, movetimeMs + 5000)
       );
 
       let uci = (res?.bestMove as string | undefined) || '';
 
+      // Break book-perfect openings for weaker Elo in the first 12 plies.
+      const earlyDeviation =
+        (movesUci.length < 12) &&
+        (Math.random() < earlyGameDeviationProb(elo, movesUci.length));
+      if (earlyDeviation) {
+        const alt = pickNotBestLegalUci(fenNow, uci) || pickRandomLegalUci(fenNow);
+        if (alt) uci = alt;
+      }
+
       // Low-Elo randomness/blunder (disabled for Elo ≥ 1800 and during analysis/book hits)
       const cx = positionComplexity(fenNow);
       const p = blunderProbability(elo, cx);
-      const allowMistakes = (elo < 1800) && !analyzing && !res?.book && !res?.fromBook;
+      const allowMistakes = (elo < 1400) && movesUci.length >= 8 && !analyzing && !res?.book && !res?.fromBook;
       if (allowMistakes && p > 0 && Math.random() < p) {
         const coin = Math.random();
         const alt = coin < 0.5
@@ -924,11 +1011,25 @@ export default function App() {
         (typeof (m as any).bestCpBefore === 'number') ? (m as any).bestCpBefore :
         (typeof (m as any).cpBestBefore  === 'number') ? (m as any).cpBestBefore  : undefined;
 
+      // Prefer opponent-POV score after the move; cpLoss helper converts to mover POV.
+      const afterCpOpponent = (() => {
+        if (typeof (m as any).cpAfter === 'number') return (m as any).cpAfter; // stored as opponent POV
+        const afterScoreObj = (m as any).afterScore;
+        if (afterScoreObj && afterScoreObj.type === 'cp' && typeof afterScoreObj.value === 'number') {
+          return afterScoreObj.value; // also opponent POV
+        }
+        if (typeof (m as any).cpAfterWhite === 'number') {
+          const whiteVal = (m as any).cpAfterWhite; // always White POV
+          return side === 'W' ? -whiteVal : whiteVal; // convert to opponent POV
+        }
+        return undefined;
+      })();
+
       const afterCpMover =
-        typeof (m as any).cpAfterWhite === 'number'
-          ? (side === 'W' ? (m as any).cpAfterWhite : -(m as any).cpAfterWhite) // cpAfterWhite is always White POV
-          : (typeof (m as any).cpAfter === 'number'
-              ? -(m as any).cpAfter   // cpAfter is opponent POV; flip to mover
+        typeof afterCpOpponent === 'number'
+          ? -afterCpOpponent
+          : (typeof (m as any).cpAfterWhite === 'number'
+              ? (side === 'W' ? (m as any).cpAfterWhite : -(m as any).cpAfterWhite)
               : afterToMoverPOV(m) ?? undefined);
       if (typeof beforeCpMover === 'number' && typeof afterCpMover === 'number') {
         (m as any).deltaCpMover = afterCpMover - beforeCpMover;
@@ -938,8 +1039,8 @@ export default function App() {
       const best = (typeof bestBeforeCp === 'number') ? ({ type: 'cp', value: bestBeforeCp } as const) : null;
       const after = hasAfterMate
         ? ({ type: 'mate', value: (m as any).mateAfter } as const)
-        : (typeof afterCpMover === 'number'
-            ? ({ type: 'cp', value: afterCpMover } as const)
+        : (typeof afterCpOpponent === 'number'
+            ? ({ type: 'cp', value: afterCpOpponent } as const)
             : null);
 
       let loss = cpLossForMoveSideAware(best as any, after as any, side);
@@ -951,6 +1052,10 @@ export default function App() {
       // Last resort: if cpBefore/cpAfterWhite exist, approximate CPL = max(0, before - after_mover)
       if (loss == null && typeof beforeCpMover === 'number' && typeof afterCpMover === 'number') {
         loss = Math.max(0, beforeCpMover - afterCpMover);
+      }
+      // If everything else is missing but we already stored a cpl, use it.
+      if (loss == null && typeof (m as any).cpl === 'number' && isFinite((m as any).cpl)) {
+        loss = Math.max(0, (m as any).cpl);
       }
       if (loss == null) continue;
       halfMoves.push({ side, best, after, loss });
@@ -969,6 +1074,7 @@ export default function App() {
 
     let sumW = 0, nW = 0, sumB = 0, nB = 0;
     for (const h of halfMoves) {
+      if (!Number.isFinite(h.loss)) continue;
       if (h.side === 'W') { sumW += h.loss; nW++; } else { sumB += h.loss; nB++; }
     }
     const avgCplW = nW ? sumW / nW : null;
@@ -1080,14 +1186,31 @@ export default function App() {
     currentPly: number;
   }) => {
     const rows = list || [];
-    const evalLabel = (m: any) => {
-      const whiteAfter =
-        typeof m?.cpAfterWhite === 'number'
-          ? m.cpAfterWhite
-          : (typeof m?.cpAfter === 'number'
-              ? ((m.side === 'White' || m.side === 'W') ? -m.cpAfter : m.cpAfter)
-              : null);
-      return whiteAfter == null ? '—' : (whiteAfter / 100).toFixed(1);
+    const beforeAfterDeltaWhite = (m: any): number | null => {
+      const side = (m.side === 'White' || m.side === 'W') ? 'W' : 'B';
+      const afterWhite = (() => {
+        if (typeof m?.cpAfterWhite === 'number') return m.cpAfterWhite;
+        if (typeof m?.cpAfter === 'number') {
+          // cpAfter is stored as opponent POV after the move
+          return side === 'W' ? -m.cpAfter : m.cpAfter;
+        }
+        return null;
+      })();
+      const beforeWhite = (() => {
+        if (typeof m?.cpBefore === 'number') return m.cpBefore; // stored White POV
+        if (typeof m?.bestCpBefore === 'number') {
+          // bestCpBefore is mover POV
+          return side === 'W' ? m.bestCpBefore : -m.bestCpBefore;
+        }
+        return null;
+      })();
+      if (afterWhite == null || beforeWhite == null) return null;
+      return afterWhite - beforeWhite;
+    };
+    const formatDelta = (cpDelta: number | null) => {
+      if (cpDelta == null || !isFinite(cpDelta)) return '—';
+      const pawns = cpDelta / 100;
+      return `${pawns > 0 ? '+' : ''}${pawns.toFixed(1)}`;
     };
     const tagColor = (tag: string) => {
       if (tag === 'Blunder') return '#ff6b6b';
@@ -1134,7 +1257,7 @@ export default function App() {
                     <td style={{ padding: '4px 2px', color: '#cfd5dd' }}>{m.moveNo}</td>
                     <td style={{ padding: '4px 2px', color: '#f7f7f7' }}>{m.san}</td>
                     <td style={{ padding: '4px 2px', color: '#aeb6c2' }}>{m.best || ''}</td>
-                    <td style={{ padding: '4px 2px', color: '#d5dce4' }}>{evalLabel(m)}</td>
+                    <td style={{ padding: '4px 2px', color: '#d5dce4' }}>{formatDelta(beforeAfterDeltaWhite(m))}</td>
                     <td style={{ padding: '4px 2px', color: tagColor(tag), fontWeight: 600 }}>{tag}</td>
                   </tr>
                 );

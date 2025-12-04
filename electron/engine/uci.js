@@ -22,12 +22,18 @@ function makeQueue() {
 }
 
 function parseInfoLine(line) {
-  // pull cp or mate if present
+  // depth/multipv/score/pv (enough to humanize selection)
   const out = {};
+  const mDepth = /\bdepth\s+(\d+)/.exec(line);
+  if (mDepth) out.depth = Number(mDepth[1]);
+  const mPvIdx = /\bmultipv\s+(\d+)/.exec(line);
+  if (mPvIdx) out.multipv = Number(mPvIdx[1]);
   const mCp = /\bscore\s+cp\s+(-?\d+)/.exec(line);
   if (mCp) out.cp = Number(mCp[1]);
   const mMate = /\bscore\s+mate\s+(-?\d+)/.exec(line);
   if (mMate) out.mate = Number(mMate[1]);
+  const mPv = /\spv\s+(.+)$/.exec(line);
+  if (mPv) out.pv = mPv[1].trim().split(/\s+/);
   return Object.keys(out).length ? out : null;
 }
 
@@ -44,6 +50,33 @@ function pickHashMb(requested) {
   const raw = Number.isFinite(env) ? env : requested;
   // Keep in the sane 1–4 GB window unless the caller overrides via env/arg.
   return clamp(Math.round(raw || 1024), 1024, 4096);
+}
+
+function pickWeighted(list) {
+  if (!Array.isArray(list) || !list.length) return null;
+  const weights = list.map((x) => Math.max(1, Number(x.weight || 1)));
+  const total = weights.reduce((a, b) => a + b, 0);
+  let r = Math.random() * total;
+  for (let i = 0; i < list.length; i++) {
+    r -= weights[i];
+    if (r <= 0) return list[i];
+  }
+  return list[list.length - 1];
+}
+
+// Softmax sampling among candidate moves with cp (higher better)
+function softmaxSample(cands, temperature = 0.6) {
+  if (!Array.isArray(cands) || !cands.length) return null;
+  const t = Math.max(0.05, Number(temperature) || 0.6);
+  const maxCp = Math.max(...cands.map((c) => c.cp));
+  const exps = cands.map((c) => Math.exp((c.cp - maxCp) / (100 * t)));
+  const sum = exps.reduce((a, b) => a + b, 0);
+  let r = Math.random() * sum;
+  for (let i = 0; i < cands.length; i++) {
+    r -= exps[i];
+    if (r <= 0) return cands[i];
+  }
+  return cands[cands.length - 1];
 }
 
 function applyDefaultStrength(send) {
@@ -347,7 +380,7 @@ async function createEngine({ bin, threads, hash } = {}) {
 
   /* -------------------------- search operations -------------------------- */
 
-  async function analyzeFen({ fen, movetimeMs = 400, multiPv = 1, useBook = true, bookMaxFullMoves = 16, forceDepthFloor = false }) {
+  async function analyzeFen({ fen, movetimeMs = 400, multiPv = 2, useBook = true, bookMaxFullMoves = 16, forceDepthFloor = false }) {
     return runSearch({
       fen,
       movetimeMs,
@@ -380,6 +413,8 @@ async function createEngine({ bin, threads, hash } = {}) {
       bookMaxFullMoves = 16,
       bookSample = false,
       verifyBookMs = 300,
+      humanMode = false,
+      human = null,
     } = opts || {};
 
     return enqueue(async () => {
@@ -391,17 +426,6 @@ async function createEngine({ bin, threads, hash } = {}) {
         const candidates = [];
         if (ext?.uci) candidates.push({ uci: ext.uci, weight: ext.weight || 1 });
         for (const m of localMoves) candidates.push({ uci: m.uci, weight: m.weight || 1 });
-
-        const pickWeighted = (arr) => {
-          const sum = arr.reduce((s, m) => s + (Number(m.weight) || 1), 0);
-          const r = Math.random() * Math.max(sum, 1);
-          let acc = 0;
-          for (const m of arr) {
-            acc += Number(m.weight) || 1;
-            if (r <= acc) return m;
-          }
-          return arr[0];
-        };
 
         const hit = candidates.length
           ? (bookSample && candidates.length > 1 ? pickWeighted(candidates) : candidates[0])
@@ -485,7 +509,47 @@ async function createEngine({ bin, threads, hash } = {}) {
       try {
         best = await waitLine((l) => l.startsWith('bestmove'), waitBudget);
         const m = /bestmove\s+(\S+)/.exec(best);
-        const bestMove = m ? m[1] : null;
+        let bestMove = m ? m[1] : null;
+
+        // Human-mode: sample among near-equals if requested
+        if (humanMode && Array.isArray(infos) && infos.length) {
+          const latestDepth = Math.max(...infos.map((x) => x.depth || 0));
+          const finalInfos = infos.filter((x) => (x.depth || 0) === latestDepth && Array.isArray(x.pv) && x.pv.length);
+          const byMove = new Map();
+          for (const inf of finalInfos) {
+            const mv = inf.pv[0];
+            if (!mv) continue;
+            const cp = (typeof inf.cp === 'number')
+              ? inf.cp
+              : (typeof inf.mate === 'number' ? (inf.mate > 0 ? 10000 : -10000) : 0);
+            if (!byMove.has(mv) || byMove.get(mv).cp < cp) byMove.set(mv, { uci: mv, cp });
+          }
+          const cands = Array.from(byMove.values()).sort((a, b) => b.cp - a.cp);
+          const maxPickDelta = Number(human?.maxPickDeltaCp ?? 60);
+          const topCp = cands.length ? cands[0].cp : null;
+          const near = (topCp == null)
+            ? []
+            : cands.filter((c) => (topCp - c.cp) <= maxPickDelta)
+                   .slice(0, Math.max(1, opts.multiPv || multiPv || 1));
+          const temp = Number(human?.temperature ?? 0.6);
+          const pick = softmaxSample(
+            near.length ? near : cands.slice(0, Math.max(1, opts.multiPv || multiPv || 1)),
+            temp
+          );
+          if (pick?.uci) bestMove = pick.uci;
+
+          // Optional rare blunder
+          const blunderRate = Math.max(0, Math.min(1, Number(human?.blunderRate ?? 0)));
+          const blunderMaxCp = Number(human?.blunderMaxCp ?? 250);
+          if (blunderRate > 0 && Math.random() < blunderRate && cands.length > 1 && topCp != null) {
+            const worse = cands.filter((c) => (topCp - c.cp) >= 80 && (topCp - c.cp) <= blunderMaxCp);
+            if (worse.length) {
+              const wPick = worse[Math.floor(Math.random() * worse.length)];
+              if (wPick?.uci) bestMove = wPick.uci;
+            }
+          }
+        }
+
         return { bestMove, infos, score: lastScore, book: false };
       } finally {
         if (depthTimer) { try { clearTimeout(depthTimer); } catch {} }
@@ -540,7 +604,7 @@ async function createEngine({ bin, threads, hash } = {}) {
     return merged;
   }
 
-  async function moveWeak({ fen, movetimeMs, multiPv = 1 }) {
+  async function moveWeak({ fen, movetimeMs, multiPv = 3, human, humanMode = true }) {
     // Scale move time by currentElo to avoid too-weak play
     const ms = Math.max(Number(movetimeMs || 0), movetimeForElo(currentElo));
     return runSearch({
@@ -552,6 +616,8 @@ async function createEngine({ bin, threads, hash } = {}) {
       forceDepthFloor: false, // play mode: honor movetime, avoid depth floor timeouts
       bookMaxFullMoves: 16,
       bookSample: currentElo <= 1100, // low Elo: sample weighted book move for variety
+      humanMode,
+      human,
     });
   }
 
