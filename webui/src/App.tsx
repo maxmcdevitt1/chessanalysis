@@ -1074,8 +1074,9 @@ export default function App() {
         loss = Math.max(0, (m as any).cpl);
       }
       if (loss == null) continue;
-      // Make the loss a bit harsher to better match common ACPL baselines.
-      const lossHarsh = Math.max(0, loss * 1.12 + 3);
+      // Make the loss harsher, especially for blunders.
+      const bump = loss >= 120 ? 18 : 6;
+      const lossHarsh = Math.max(0, loss * 1.18 + bump);
       halfMoves.push({ side, best, after, loss: lossHarsh });
 
       const b = bucketFromLossCp(lossHarsh);

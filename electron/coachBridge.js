@@ -187,31 +187,6 @@ async function callModelStructured({ model, prompt, expected }) {
 
   const attempts = [];
   if (COACH_OUTPUT_MODE === 'array') {
-    attempts.push({
-      desc: 'array-schema',
-      body: {
-        ...baseBody,
-        format: {
-          type: 'json_schema',
-          json_schema: {
-            name: 'CoachNotes',
-            schema: {
-              type: 'array',
-              items: {
-                type: 'object',
-                additionalProperties: false,
-                required: ['moveIndex', 'title', 'text'],
-                properties: {
-                  moveIndex: { type: 'integer' },
-                  title: { type: 'string', maxLength: 60 },
-                  text: { type: 'string', maxLength: 280 },
-                },
-              },
-            },
-          },
-        },
-      },
-    });
     attempts.push({ desc: 'array-json', body: { ...baseBody, format: 'json' } });
     attempts.push({ desc: 'array-plain', body: { ...baseBody, format: undefined } });
     // Final fallback: NDJSON streaming
