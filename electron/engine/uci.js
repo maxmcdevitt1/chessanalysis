@@ -542,10 +542,16 @@ async function createEngine({ bin, threads, hash } = {}) {
           const blunderRate = Math.max(0, Math.min(1, Number(human?.blunderRate ?? 0)));
           const blunderMaxCp = Number(human?.blunderMaxCp ?? 250);
           if (blunderRate > 0 && Math.random() < blunderRate && cands.length > 1 && topCp != null) {
-            const worse = cands.filter((c) => (topCp - c.cp) >= 80 && (topCp - c.cp) <= blunderMaxCp);
-            if (worse.length) {
-              const wPick = worse[Math.floor(Math.random() * worse.length)];
-              if (wPick?.uci) bestMove = wPick.uci;
+            const minDrop = 70; // target mild blunder ≥0.7 pawn
+            const candidates = cands
+              .map((c) => ({ ...c, diff: topCp - c.cp }))
+              .filter((c) => c.diff >= minDrop && c.diff <= blunderMaxCp)
+              .sort((a, b) => a.diff - b.diff);
+            if (candidates.length) {
+              // Bias toward the least-bad few options
+              const idx = Math.min(candidates.length - 1, Math.floor(Math.random() * 2));
+              const pickBad = candidates[idx];
+              if (pickBad?.uci) bestMove = pickBad.uci;
             }
           }
         }

@@ -307,7 +307,7 @@ const S = {
   table: {
     width: '100%',
     borderCollapse: 'collapse' as const,
-    fontSize: 18,
+    fontSize: 19,
   },
 
   thtd: {
@@ -315,6 +315,25 @@ const S = {
     padding: '6px 4px',
     textAlign: 'left' as const,
     verticalAlign: 'middle' as const,
+  },
+  progressOuter: {
+    width: '100%',
+    height: 10,
+    borderRadius: 999,
+    background: '#1a1a1a',
+    border: '1px solid #2f2f2f',
+    overflow: 'hidden',
+  },
+  progressInner: (pct: number) => ({
+    width: `${Math.max(0, Math.min(100, pct))}%`,
+    height: '100%',
+    background: 'linear-gradient(90deg, #4caf50, #8bc34a)',
+    transition: 'width 180ms ease',
+  }),
+  progressIndeterminate: {
+    width: '45%',
+    height: '100%',
+    background: 'linear-gradient(90deg, #4caf50, #8bc34a)',
   },
 };
 
@@ -349,6 +368,17 @@ export default function SidebarPane(props: SidebarProps) {
     coachBusy,
     ply,
   } = props;
+
+  const ProgressBar = ({ value }: { value?: number | null }) => {
+    const pct = typeof value === 'number' && isFinite(value) ? Math.max(0, Math.min(100, value)) : null;
+    return (
+      <div style={S.progressOuter}>
+        {pct != null
+          ? <div style={S.progressInner(pct)} />
+          : <div style={S.progressIndeterminate} />}
+      </div>
+    );
+  };
 
   const effElo = uiEloFromStrength(engineStrength);
   // Build the fixed list 400..2500 in 200s (including 2500)
@@ -491,6 +521,11 @@ export default function SidebarPane(props: SidebarProps) {
                 {coachBusy ? 'Generating…' : 'Generate notes'}
               </button>
             </div>
+            {coachBusy && (
+              <div style={{ marginTop: 8 }}>
+                <ProgressBar />
+              </div>
+            )}
             {Array.isArray(coachNotes) && coachNotes.length > 0 ? (
               <CoachMoveList
                 notes={coachNotes}
@@ -523,8 +558,6 @@ export default function SidebarPane(props: SidebarProps) {
                   <option key={elo} value={elo}>{elo} Elo</option>
                 ))}
               </select>
-              <span style={S.small}>Effective: {effElo} Elo</span>
-              <span style={{ ...S.small, marginLeft: 6 }}>Advanced</span>
             </div>
           </div>
 
@@ -559,8 +592,9 @@ export default function SidebarPane(props: SidebarProps) {
               </label>
             </div>
             {analyzing && (
-              <div style={{ ...S.small, marginTop: 8 }}>
-                Progress: {progress ?? 0}%
+              <div style={{ marginTop: 8, display:'flex', flexDirection:'column', gap:6 }}>
+                <ProgressBar value={progress ?? 0} />
+                <div style={{ ...S.small }}>Progress: {progress ?? 0}%</div>
               </div>
             )}
           </div>
@@ -625,19 +659,6 @@ export default function SidebarPane(props: SidebarProps) {
             </div>
           </div>
 
-          {(gameEloWhite ?? gameEloBlack) != null && (
-            <>
-              <div style={S.divider} />
-              <div style={S.subSection}>
-                <div style={S.title}>Game Elo (estimate)</div>
-                <div style={{ display: 'flex', gap: 12 }}>
-                  <div style={S.small}>White: {gameEloWhite != null ? Math.round(gameEloWhite) : '—'}</div>
-                  <div style={S.small}>Black: {gameEloBlack != null ? Math.round(gameEloBlack) : '—'}</div>
-                </div>
-              </div>
-            </>
-          )}
-
           <div style={S.divider} />
 
           {/* Export panel */}
@@ -661,13 +682,13 @@ export default function SidebarPane(props: SidebarProps) {
                   <table style={S.table}>
                     <thead>
                       <tr>
-                        <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>#</th>
-                        <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Side</th>
-                        <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>SAN</th>
-                        <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Best</th>
-                        <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Eval</th>
-                        <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Icon</th>
-                        <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Tag</th>
+                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>#</th>
+                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Side</th>
+                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>SAN</th>
+                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Best</th>
+                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Eval</th>
+                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Icon</th>
+                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Tag</th>
                       </tr>
                     </thead>
                     <tbody>

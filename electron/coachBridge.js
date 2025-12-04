@@ -6,17 +6,19 @@ const https = require('https');
 
 /* ------------------------------- Config ----------------------------------- */
 
+// Default model can be overridden via env; use a small, likely-available default and fall back if missing.
 const DEFAULT_MODEL = process.env.COACH_MODEL || 'llama3.2:3b-instruct-q5_K_M';
+const FALLBACK_MODEL = 'llama3.1:8b-instruct-q5_K_M';
 const COACH_DEBUG = process.env.COACH_DEBUG === '1';
-// Smaller batches = fewer truncations on small quantized models
-const BATCH_PLIES = parseInt(process.env.COACH_BATCH_PLIES || '6', 10); // per-call plies
-// A little more headroom per item to avoid cutoffs
-const TOKENS_PER_ITEM = parseInt(process.env.COACH_TOKENS_PER_ITEM || '160', 10);
-// Try array first, then fall back to ndjson automatically
-const COACH_OUTPUT_MODE = (process.env.COACH_OUTPUT_MODE || 'array').toLowerCase(); // 'array' or 'ndjson'
+// Keep batches small to improve adherence to "N items" instruction
+const BATCH_PLIES = parseInt(process.env.COACH_BATCH_PLIES || '8', 10); // per-call plies
+// Increase tokens-per-item to reduce truncation
+const TOKENS_PER_ITEM = parseInt(process.env.COACH_TOKENS_PER_ITEM || '130', 10);
+// Default to array for more predictable parsing; ndjson still supported via env
+const COACH_OUTPUT_MODE = (process.env.COACH_OUTPUT_MODE || 'array').toLowerCase(); // 'ndjson' or 'array'
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
-const TIMEOUT_MS = Number(process.env.COACH_TIMEOUT_MS || 30000);
-const AUTO_PULL = String(process.env.AUTO_PULL_COACH || '0') === '1';
+const TIMEOUT_MS = Number(process.env.COACH_TIMEOUT_MS || 60000);
+const AUTO_PULL = String(process.env.AUTO_PULL_COACH || '1') === '1';
 
 function chunk(arr, size) {
   const out = [];
@@ -24,7 +26,42 @@ function chunk(arr, size) {
   return out;
 }
 
-const fmt = (n) => (Number.isFinite(n) ? Math.round(n) : '-');
+function log(...args) { if (COACH_DEBUG) console.log('[coach]', ...args); }
+
+// Node18+ global fetch ok in Electron main; polyfill if you need older
+// (v18 ships fetch; keep a fallback for safety)
+let _fetch = global.fetch;
+if (!_fetch) {
+  try { _fetch = require('node-fetch'); } catch {}
+}
+
+function fmt(n) { return Number.isFinite(n) ? Math.round(n) : '-'; }
+
+async function fetchText(body) {
+  // Prefer fetch if available; otherwise fall back to our httpRequest helper.
+  if (_fetch) {
+    const res = await _fetch(`${OLLAMA_URL}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const txt = await res.text().catch(() => '');
+      const err = new Error(`ollama status ${res.status}${txt ? `: ${txt.slice(0, 200)}` : ''}`);
+      err.status = res.status;
+      throw err;
+    }
+    return res.text();
+  }
+  // Fallback: non-streaming HTTP helper
+  const res = await httpRequest(`${OLLAMA_URL}/api/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`ollama status ${res.status}`);
+  return res.text || '';
+}
 
 /* ------------------------------ HTTP helper ------------------------------- */
 
@@ -133,7 +170,7 @@ function tryParseArrayCandidates(cands) {
 async function callModelStructured({ model, prompt, expected }) {
   const baseBody = {
     model,
-    stream: COACH_OUTPUT_MODE === 'ndjson',
+    stream: false, // explicit non-stream for array mode
     system: buildSystemPrompt(),
     prompt,
     options: {
@@ -176,33 +213,48 @@ async function callModelStructured({ model, prompt, expected }) {
       },
     });
     attempts.push({ desc: 'array-json', body: { ...baseBody, format: 'json' } });
+    attempts.push({ desc: 'array-plain', body: { ...baseBody, format: undefined } });
+    // Final fallback: NDJSON streaming
+    attempts.push({ desc: 'ndjson', body: { ...baseBody, stream: true, format: undefined } });
+  } else {
+    // NDJSON-first if mode=ndjson
+    attempts.push({ desc: 'ndjson', body: { ...baseBody, stream: true, format: undefined } });
+    attempts.push({ desc: 'array-json', body: { ...baseBody, stream: false, format: 'json' } });
+    attempts.push({ desc: 'array-plain', body: { ...baseBody, stream: false, format: undefined } });
   }
-  attempts.push({ desc: 'fallback', body: { ...baseBody, format: undefined } });
 
   let lastRawSample = '';
   for (const attempt of attempts) {
-    const res = await fetch(`${OLLAMA_URL}/api/generate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(attempt.body),
-    });
-    const json = await res.json();
-    const raw = String(json?.response || '');
+    let rawText = '';
+    try {
+      rawText = await fetchText(attempt.body);
+    } catch (err) {
+      console.error('[coach] fetch error', attempt.desc, err && (err.stack || err.message || err));
+      continue;
+    }
     if (!lastRawSample) {
-      const firstStr = raw || (typeof json?.message?.content === 'string' ? json.message.content : '');
-      lastRawSample = firstStr ? firstStr.slice(0, 400) : '';
+      lastRawSample = rawText ? rawText.slice(0, 400) : '';
     }
     if (COACH_DEBUG) {
-      console.log(`[coach] call (${attempt.desc}) len=${prompt.length} chars; response chars=${raw.length}`);
+      console.log(`[coach] call (${attempt.desc}) len=${prompt.length} chars; response chars=${rawText.length}`);
     }
 
     const candidates = [];
-    if (Array.isArray(json)) candidates.push(json);
-    if (json && typeof json === 'object') {
-      if (Array.isArray(json.response)) candidates.push(json.response);
-      if (typeof json.response === 'string') candidates.push(json.response);
-      if (Array.isArray(json.message?.content)) candidates.push(json.message.content);
-      if (typeof json.message?.content === 'string') candidates.push(json.message.content);
+    if (COACH_OUTPUT_MODE === 'ndjson') {
+      candidates.push(rawText);
+    } else {
+      try {
+        const json = JSON.parse(rawText);
+        if (Array.isArray(json)) candidates.push(json);
+        if (json && typeof json === 'object') {
+          if (Array.isArray(json.response)) candidates.push(json.response);
+          if (typeof json.response === 'string') candidates.push(json.response);
+          if (Array.isArray(json.message?.content)) candidates.push(json.message.content);
+          if (typeof json.message?.content === 'string') candidates.push(json.message.content);
+        }
+      } catch {
+        candidates.push(rawText);
+      }
     }
 
     const parsedArray = tryParseArrayCandidates(candidates);
@@ -212,7 +264,7 @@ async function callModelStructured({ model, prompt, expected }) {
 
     // NDJSON-like fallback: parse each line into an object
     const asItems = [];
-    const lines = raw.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+    const lines = rawText.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
     for (const line of lines) {
       const v = tryParse(line);
       if (v) asItems.push(v);
@@ -305,8 +357,8 @@ async function generateNotes(inputs) {
     if (!norm.length) {
       norm = batch.map((m, i) => ({
         moveIndex: Number.isFinite(m.idx) ? m.idx : (Number.isFinite(m.ply) ? m.ply : i),
-        title: '',
-        text: '',
+        title: `Move ${(Number.isFinite(m.ply) ? m.ply : i) + 1}: ${m.san || ''}`,
+        text: `${(m.tag || 'Move')} — Δcp=${m.deltaCp ?? 'n/a'}`,
         type: 'move',
       }));
     }
@@ -328,8 +380,13 @@ function registerCoachIpc() {
   ipcMain.handle('coach:generate', async (_e, payload) => {
     try {
       const inputs = payload?.inputs || {};
-      const model = String(inputs?.model || DEFAULT_MODEL);
-      const available = await ensureModelAvailable(model);
+      let model = String(inputs?.model || DEFAULT_MODEL);
+      let available = await ensureModelAvailable(model);
+      if (!available && FALLBACK_MODEL) {
+        log(`model ${model} missing; trying fallback ${FALLBACK_MODEL}`);
+        const ok = await ensureModelAvailable(FALLBACK_MODEL);
+        if (ok) { model = FALLBACK_MODEL; available = true; }
+      }
       if (!available) {
         console.error(`[coach] model not available: ${model}. Install with: ollama pull ${model}`);
         return { offline: true, reason: 'model-missing', model };

@@ -94,13 +94,14 @@ export function avgCplPerSide(halfMoves: Array<{
 
 /**
  * Accuracy from avg CPL with a steeper curve.
- * Rough anchors: ACPL 15≈98, 30≈95, 60≈88, 90≈82, 130≈75, 200≈65.
+ * Rough anchors (harsher): ACPL 10≈90, 20≈82, 40≈74, 60≈69, 90≈62, 130≈55.
  */
 export function accuracyFromAvgCpl(acpl: number | null): number | null {
   if (acpl == null || !isFinite(acpl)) return null;
   const x = Math.max(0, acpl);
-  const acc = 100 - 4.5 * Math.sqrt(x);
-  return Math.round(Math.max(28, Math.min(99, acc)));
+  // Slight offset keeps tiny ACPL from giving artificially perfect scores
+  const acc = 103 - 6.5 * Math.sqrt(x + 4);
+  return Math.round(Math.max(18, Math.min(99, acc)));
 }
 
 /** Optional: CPL → qualitative tag aligned with stricter accuracy. */

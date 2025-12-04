@@ -25,7 +25,18 @@ export function GoodBadge({ size = 24 }: Props) {
 
 export function MistakeBadge({ size = 24 }: Props) {
   return (
-    <svg viewBox="0 0 30 30" width={size} height={size} aria-label="Mistake">
+    <svg viewBox="0 0 30 30" width={size} height={size} aria-label="Mistake" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="15" cy="15" r="14" fill="#f28b3c"/>
+      <rect x="14" y="7" width="2.5" height="12" rx="1" fill="#ffffff"/>
+      <circle cx="15.25" cy="22" r="2" fill="#ffffff"/>
+    </svg>
+  );
+}
+
+// Inaccuracy uses the previous “mistake” style icon (gold question motif)
+export function InaccuracyBadge({ size = 24 }: Props) {
+  return (
+    <svg viewBox="0 0 30 30" width={size} height={size} aria-label="Inaccuracy">
       <circle cx="15" cy="15" r="14" fill="#f4c430"/>
       <path d="M15 8c-2.8 0-5 1.9-5 4h3c0-1 .9-2 2-2s2 1 2 2c0 2-3 2.5-3 5h3c0-2.2 3-3 3-6 0-2.7-2.2-5-5-5z" fill="#b38300"/>
       <circle cx="15" cy="22" r="2" fill="#b38300"/>
@@ -69,6 +80,7 @@ export function BadgeForTag({
   switch (tag) {
     case 'Best': return <BestBadge size={size} />;
     case 'Good': return <GoodBadge size={size} />;
+    case 'Inaccuracy': return <InaccuracyBadge size={size} />;
     case 'Mistake': return <MistakeBadge size={size} />;
     case 'Blunder': return <BlunderBadge size={size} />;
     case 'Book': return <BookBadge size={size} />;

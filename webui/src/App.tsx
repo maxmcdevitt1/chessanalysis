@@ -114,6 +114,21 @@ function lastScoreCp(infos?: any[]): number | null {
   return null;
 }
 
+function cpAfterWhiteValue(m: any): number | null {
+  if (!m) return null;
+  const side = (m.side === 'White' || m.side === 'W') ? 'W' : 'B';
+  if (typeof m.cpAfterWhite === 'number') return m.cpAfterWhite;
+  if (typeof m.cpAfter === 'number') {
+    return side === 'W' ? -m.cpAfter : m.cpAfter;
+  }
+  if (typeof m.mateAfter === 'number') {
+    const mateCp = mateToCp(m.mateAfter);
+    if (mateCp == null) return null;
+    return side === 'W' ? -mateCp : mateCp;
+  }
+  return null;
+}
+
 /* ----- Strength/Elo mapping (consistent across eval + replies) ----- */
 
 // Map UI strength 1..20 → display Elo 400..2500
@@ -219,8 +234,8 @@ function afterToMoverPOV(m: any): number | null {
 function accFromAcplConservative(acpl: number | null): number | null {
   if (acpl == null || !isFinite(acpl)) return null;
   const x = Math.max(0, acpl);
-  // Moderately punitive: small ACPL trims a few points, larger ACPL drops faster.
-  const raw = 100 - 4.5 * Math.sqrt(x);
+  // Harsher curve: small ACPL still costs points; higher ACPL falls faster.
+  const raw = 103 - 6.0 * Math.sqrt(x + 6);
   return Math.max(0, Math.min(99, Math.round(raw)));
 }
 
@@ -231,19 +246,19 @@ function estimateEloConservative(acpl: number | null, buckets: Buckets): number 
   // Use the same steep ACPL→accuracy curve to anchor Elo, then penalize mistakes hard.
   const acc = accFromAcplConservative(acpl) ?? 0; // 0..99
   const accScale = Math.max(0, Math.min(1, acc / 100));
-  // Base Elo from accuracy (curved so it drops fast): 400..2600
-  let base = 400 + Math.pow(accScale, 2) * 2200;
-  // Extra penalty for raw ACPL and bucketed mistakes/blunders
-  base -= (acpl * 8) + (inacc * 25) + (mistakes * 70) + (blunders * 140);
-  return Math.max(400, Math.min(2400, Math.round(base)));
+  // Base Elo from accuracy (curved so it drops fast): 400..2300
+  let base = 380 + Math.pow(accScale, 1.9) * 2100;
+  // Extra penalty for raw ACPL and bucketed mistakes/blunders (harsher)
+  base -= (acpl * 11) + (inacc * 40) + (mistakes * 90) + (blunders * 170);
+  return Math.max(400, Math.min(2300, Math.round(base)));
 }
 
 // Bucket losses (centipawns) into rough severity levels independent of tags.
 function bucketFromLossCp(lossCp: number): 'ok'|'inacc'|'mistake'|'blunder' {
-  if (lossCp <= 15) return 'ok';        // ≤0.50 pawns
-  if (lossCp <= 500) return 'inacc';    // 0.51–1.50
-  if (lossCp <= 100) return 'mistake';  // 1.51–3.00
-  return 'blunder';                      // >3.00
+  if (lossCp <= 20) return 'ok';        // ≤0.20 pawns
+  if (lossCp <= 60) return 'inacc';     // 0.21–0.60
+  if (lossCp <= 120) return 'mistake';  // 0.61–1.20
+  return 'blunder';                      // >1.20
 }
 
 function pickRandomLegalUci(fen: string): string | null {
@@ -362,8 +377,9 @@ function sameBaseMove(a?: string | null, b?: string | null): boolean {
 
 function severityTag(cpl: number | null): MoveEval['tag'] {
   if (cpl == null) return 'Good';
-  if (cpl <= 25) return 'Good';
-  if (cpl <= 80) return 'Mistake';
+  if (cpl <= 5) return 'Good';
+  if (cpl <= 30) return 'Inaccuracy';
+  if (cpl <= 70) return 'Mistake';
   return 'Blunder';
 }
 
@@ -371,6 +387,7 @@ function symbolFor(tag: MoveEval['tag']): MoveEval['symbol'] {
   switch (tag) {
     case 'Genius': return '!!';
     case 'Best': return '!';
+    case 'Inaccuracy': return '?!';
     case 'Good': return '';
     case 'Mistake': return '?';
     case 'Blunder': return '??';
@@ -987,7 +1004,7 @@ export default function App() {
 
   /* ------------------ review (accuracy / avg CPL) ------------------------ */
 
-  const evalSeries = useM(() => moveEvals.map((m) => m?.cpAfter ?? null), [moveEvals]);
+  const evalSeries = useM(() => moveEvals.map((m) => cpAfterWhiteValue(m)), [moveEvals]);
 
   const review = useM(() => {
     if (!moveEvals.length) return null;
@@ -997,7 +1014,6 @@ export default function App() {
     let bW: Buckets = { inacc: 0, mistakes: 0, blunders: 0 };
     let bB: Buckets = { inacc: 0, mistakes: 0, blunders: 0 };
     for (const m of moveEvals) {
-      if (m?.tag === 'Book' || (m as any)?.isBook) continue; // exclude book moves from ACPL
       const side: 'W' | 'B' = moverSideOf(m);
 
       const beforeCpMover = (() => {
@@ -1058,9 +1074,11 @@ export default function App() {
         loss = Math.max(0, (m as any).cpl);
       }
       if (loss == null) continue;
-      halfMoves.push({ side, best, after, loss });
+      // Make the loss a bit harsher to better match common ACPL baselines.
+      const lossHarsh = Math.max(0, loss * 1.12 + 3);
+      halfMoves.push({ side, best, after, loss: lossHarsh });
 
-      const b = bucketFromLossCp(loss);
+      const b = bucketFromLossCp(lossHarsh);
       if (side === 'W') {
         if (b === 'inacc') bW.inacc++;
         else if (b === 'mistake') bW.mistakes++;
@@ -1156,21 +1174,14 @@ export default function App() {
 
   const evalDisplayCp = useM(() => {
     if (typeof evalCp === 'number' && isFinite(evalCp)) return evalCp;
-    const cur =
-      (currentMoveEval && typeof (currentMoveEval as any).cpAfter === 'number'
-        ? (currentMoveEval as any).cpAfter
-        : cpFromMate((currentMoveEval as any)?.mateAfter)) ?? null;
+    const cur = cpAfterWhiteValue(currentMoveEval as any);
     if (typeof cur === 'number' && isFinite(cur)) return cur;
     for (let i = moveEvals.length - 1; i >= 0; i--) {
-      const m: any = moveEvals[i];
-      if (typeof m?.cpAfter === 'number' && isFinite(m.cpAfter)) return m.cpAfter;
-      if (typeof m?.mateAfter === 'number' && isFinite(m.mateAfter)) {
-        const v = cpFromMate(m.mateAfter);
-        if (typeof v === 'number') return v;
-      }
+      const v = cpAfterWhiteValue(moveEvals[i] as any);
+      if (typeof v === 'number' && isFinite(v)) return v;
     }
     return null;
-  }, [evalCp, currentMoveEval, moveEvals, cpFromMate]);
+  }, [evalCp, currentMoveEval, moveEvals]);
 
   // Only show per-move badges when the current move has an analysis tag.
   const hasAnalysis = !!(currentMoveEval && currentMoveEval.tag);
@@ -1214,7 +1225,8 @@ export default function App() {
     };
     const tagColor = (tag: string) => {
       if (tag === 'Blunder') return '#ff6b6b';
-      if (tag === 'Mistake') return '#f5b942';
+      if (tag === 'Mistake') return '#f28b3c';
+      if (tag === 'Inaccuracy') return '#f4c430';
       if (tag === 'Best' || tag === 'Genius') return '#6dd679';
       if (tag === 'Book' || tag === 'Opening') return '#8ab5ff';
       return '#cfd5dd';
@@ -1305,8 +1317,8 @@ export default function App() {
           evalPending={evalPending}
 
           // series + current move for icons/graph
-          currentMoveEval={ply > 0 ? (moveEvals[ply - 1] ?? null) : null}
-          evalSeries={moveEvals.map(m => (m?.cpAfter ?? null))}
+        currentMoveEval={ply > 0 ? (moveEvals[ply - 1] ?? null) : null}
+          evalSeries={evalSeries}
           showEvalGraph={showEvalGraph}
           onToggleEvalGraph={() => setShowEvalGraph(v => !v)}
           hasAnalysis={hasAnalysis}
@@ -1341,6 +1353,14 @@ export default function App() {
           bookMask={bookMask}
           currentPly={ply}
           lastMove={ply > 0 && movesUci[ply - 1] ? { from: movesUci[ply - 1].slice(0,2), to: movesUci[ply - 1].slice(2,4) } : null}
+
+          // player display around board
+          whiteName="White"
+          blackName="Black"
+          whiteAcc={review?.whiteAcc ?? null}
+          blackAcc={review?.blackAcc ?? null}
+          whiteElo={review?.estEloWhite ?? null}
+          blackElo={review?.estEloBlack ?? null}
         />
 
         <SidebarPane

@@ -51,6 +51,14 @@ type BoardPaneProps = {
   currentPly?: number;
   lastMove?: { from: string; to: string } | null;
   customSquareStyles?: Record<string, React.CSSProperties>;
+
+  // Player info
+  whiteName?: string;
+  blackName?: string;
+  whiteAcc?: number | null;
+  blackAcc?: number | null;
+  whiteElo?: number | null;
+  blackElo?: number | null;
 };
 
 /* --------------------------------- UI Kit -------------------------------- */
@@ -86,6 +94,51 @@ const ui = {
 
 function fileIdx(f: string) {
   return 'abcdefgh'.indexOf(f) + 1;
+}
+
+function PlayerBadge({
+  side,
+  name,
+  acc,
+  elo,
+}: {
+  side: 'white' | 'black';
+  name: string;
+  acc: number | null | undefined;
+  elo: number | null | undefined;
+}) {
+  const isWhite = side === 'white';
+  const bg = isWhite ? '#f5f5f5' : '#2f2f33';
+  const fg = isWhite ? '#222' : '#f3f4f6';
+  const sub = isWhite ? '#4a4a4a' : '#d1d5db';
+  const border = isWhite ? '#e0e0e0' : '#3f3f45';
+  const pillBg = isWhite ? '#e8e8e8' : '#3a3a40';
+  return (
+    <div style={{
+      minWidth: 160,
+      padding: '10px 12px',
+      borderRadius: 12,
+      background: bg,
+      color: fg,
+      border: `1px solid ${border}`,
+      boxShadow: '0 2px 6px rgba(0,0,0,0.25)',
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 6,
+      alignItems: 'flex-start',
+    }}>
+      <div style={{ fontSize: 16, fontWeight: 700 }}>{name}</div>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <span style={{ padding: '4px 8px', borderRadius: 8, background: pillBg, color: fg, fontWeight: 600 }}>
+          Elo: {elo != null ? Math.round(elo) : '—'}
+        </span>
+        <span style={{ padding: '4px 8px', borderRadius: 8, background: pillBg, color: fg, fontWeight: 600 }}>
+          Acc: {acc != null ? `${Math.round(acc)}%` : '—'}
+        </span>
+      </div>
+      <div style={{ fontSize: 12, color: sub }}>{isWhite ? 'Plays as White' : 'Plays as Black'}</div>
+    </div>
+  );
 }
 
 function RenderBadge({ tag, size = 24 }: { tag: MoveEvalLite['tag']; size?: number }) {
@@ -180,6 +233,14 @@ export default function BoardPane(props: BoardPaneProps) {
     onOrientationChange, hasAnalysis,
   } = props;
   const { customSquareStyles, bookMask, currentPly, lastMove } = props;
+  const {
+    whiteName = 'White',
+    blackName = 'Black',
+    whiteAcc = null,
+    blackAcc = null,
+    whiteElo = null,
+    blackElo = null,
+  } = props;
 
   const { containerRef, boardWidth } = useStableBoardWidth();
 
@@ -232,24 +293,64 @@ export default function BoardPane(props: BoardPaneProps) {
 
   // Add a book badge to from/to squares if the current ply is still in book.
   const mergedSquareStyles = useMemo(() => {
-    // Stop rendering book badges on squares to avoid stray glyphs.
-    return customSquareStyles || {};
-  }, [customSquareStyles]);
+    const base = customSquareStyles ? { ...customSquareStyles } : {};
+    const tag = hasAnalysis ? currentMoveEval?.tag : null;
+    const square = destSquare?.toLowerCase?.();
+    if (square && (tag === 'Best' || tag === 'Blunder')) {
+      const color = tag === 'Best' ? 'rgba(46,204,113,0.55)' : 'rgba(231,76,60,0.55)';
+      base[square] = {
+        ...(base[square] || {}),
+        boxShadow: `inset 0 0 0 4px ${color}`,
+        background: `radial-gradient(circle at center, ${color} 0%, ${color} 40%, transparent 75%)`,
+      };
+    }
+    return base;
+  }, [customSquareStyles, hasAnalysis, currentMoveEval?.tag, destSquare]);
 
   async function onPieceDrop(from: string, to: string) { return onUserDrop(from, to); }
 
   /* ------------------------------ Layout numbers ------------------------------ */
 
-  // Eval bar height slightly smaller than board height
-  const evalBarHeight = Math.floor(boardWidth * 0.94);
+  // Eval bar matches board height
+  const evalBarHeight = boardWidth;
+  // Make the eval graph taller but keep width aligned to the board.
+  const sparklineWidth = boardWidth;
+  const evalColWidth = 180;
+  // Keep badges and main row aligned to board width; allow a modest gutter so black badge sits over board.
+  const layoutWidth = boardWidth + evalColWidth + 24;
+  const boardOffset = 38; // nudge board+eval bar to the right without moving controls/graph
+  const blackBadgeShift = -100; // pull black badge further left
+  const graphOffset = boardOffset + 135; // nudge sparkline further right to align under the shifted board
+  const cornerBtnStyle: React.CSSProperties = {
+    position: 'absolute',
+    bottom: 6,
+    padding: '10px 12px',
+    fontSize: 15,
+    borderRadius: 10,
+    border: '1px solid #565656',
+    background: '#2f2f2f',
+    color: '#eee',
+    boxShadow: '0 2px 5px rgba(0,0,0,0.35)',
+    cursor: 'pointer',
+  };
 
   /* --------------------------------- Render --------------------------------- */
 
   return (
-    <div style={{ display:'flex', gap:24, alignItems:'flex-start', maxWidth:'min(1500px, 96vw)', margin:'0 auto' }}>
-      {/* LEFT: board + controls */}
-      <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:14, paddingTop: 10 }}>
-        <div ref={containerRef} style={{ position:'relative', width: boardWidth, margin:'0 auto' }}>
+    <div style={{ display:'flex', flexDirection:'column', gap:12, alignItems:'center', justifyContent:'center', width:'100%', maxWidth:'98vw', margin:'0 auto' }}>
+      {/* Top row: player badges spaced evenly over the board area */}
+      <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', width: layoutWidth }}>
+        <div style={{ marginLeft: 6 }}>
+          <PlayerBadge side="white" name={whiteName} acc={whiteAcc} elo={whiteElo} />
+        </div>
+        <div style={{ marginRight: Math.max(0, evalColWidth * 0.45 - blackBadgeShift) }}>
+          <PlayerBadge side="black" name={blackName} acc={blackAcc} elo={blackElo} />
+        </div>
+      </div>
+
+      {/* Main row: board + eval bar */}
+      <div style={{ display:'flex', flexDirection:'row', gap:18, alignItems:'flex-start', justifyContent:'flex-start', width: layoutWidth, marginLeft: boardOffset }}>
+        <div ref={containerRef} style={{ position:'relative', width: boardWidth, paddingBottom: 50 }}>
           <Chessboard
             id="analysis"
             position={fen}
@@ -277,62 +378,80 @@ export default function BoardPane(props: BoardPaneProps) {
               <RenderBadge tag={overlayTag} size={badgeSize} />
             </div>
           )}
+
+          {/* Corner navigation buttons (First / End) at board corners */}
+          <button
+            style={{ ...cornerBtnStyle, left: 6 }}
+            onClick={() => onRebuildTo(0)}
+            title="Go to start (Arrow Up / Home)"
+          >
+            First
+          </button>
+          <button
+            style={{ ...cornerBtnStyle, right: 6 }}
+            onClick={() => onRebuildTo(movesUci.length)}
+            title="Go to end (Arrow Down / End)"
+          >
+            End
+          </button>
         </div>
 
-        {/* Optional sparkline under the board */}
-        {props.showEvalGraph !== false && evalSeries && evalSeries.length > 0 ? (
-          <div style={{ width: boardWidth, padding:10, border:'1px solid #3a3a3a', borderRadius:10 }}>
-            <EvalSparkline series={evalSeries} onClickIndex={(i)=>props.onRebuildTo(i+1)} />
-          </div>
-        ) : null}
-
-        {/* Controls at the bottom of the column */}
-        <div style={{ ...ui.col, width: boardWidth, gap: 12, marginTop: 6 }}>
-          <div style={{ ...ui.row, justifyContent:'center', gap: 10, flexWrap: 'wrap' }}>
-            <button style={ui.btnGhost} onClick={() => onRebuildTo(0)} disabled={ply === 0}>First</button>
-            <button style={ui.btnGhost} onClick={() => onRebuildTo(Math.max(0, ply - 1))} disabled={ply === 0}>Back</button>
-            <button style={ui.btnGhost} onClick={() => onRebuildTo(Math.min(movesUci.length, ply + 1))} disabled={ply >= movesUci.length}>Forward</button>
-            <button style={ui.btnGhost} onClick={() => onRebuildTo(movesUci.length)} disabled={ply >= movesUci.length}>End</button>
-            <button style={ui.btnGhost} onClick={onNewGame}>New</button>
-          </div>
-          <div style={{ ...ui.row, justifyContent:'center', gap: 12, flexWrap: 'wrap' }}>
-            <button style={ui.btn} onClick={onEngineMove} disabled={engineBusy}>Engine Move</button>
-            <label style={{ ...ui.checkboxLabel }}>
-              <input type="checkbox" checked={autoReply} onChange={e => setAutoReply(e.target.checked)} />
-              Auto reply
-            </label>
-            <button
-              style={ui.btn}
-              onClick={() => {
-                onOrientationChange?.('black');
-                if (ply === 0) onEngineMove();
-              }}
-              disabled={engineBusy || !onOrientationChange}
-              title="Flip to Black and, if at start, let engine make the first move"
-            >
-              Play as Black
-            </button>
-            <button
-              style={ui.btnGhost}
-              onClick={() => onOrientationChange?.(orientation === 'white' ? 'black' : 'white')}
-              disabled={!onOrientationChange}
-              title="Flip board"
-            >
-              Flip
-            </button>
+        {/* RIGHT: eval bar column — matches board height */}
+        <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:10, minWidth: evalColWidth }}>
+          <div style={{
+            display:'flex',
+            alignItems:'flex-start',
+            justifyContent:'flex-start',
+            height: boardWidth, // align column height to board
+            minWidth: evalColWidth,
+          }}>
+            <EvalBar cp={evalCpDisplay} pending={Boolean(evalPending)} height={evalBarHeight} />
           </div>
         </div>
       </div>
 
-      {/* RIGHT: eval bar column — exactly next to the board, slightly shorter than board */}
-      <div style={{
-        display:'flex',
-        alignItems:'flex-start',
-        justifyContent:'flex-start',
-        height: boardWidth, // align column height to board
-        minWidth: 160,      // room for bar + labels
-      }}>
-        <EvalBar cp={evalCpDisplay} pending={Boolean(evalPending)} height={evalBarHeight} />
+      {/* Optional sparkline under the board */}
+      {props.showEvalGraph !== false && evalSeries && evalSeries.length > 0 ? (
+        <div style={{ width: sparklineWidth, padding:12, border:'1px solid #3a3a3a', borderRadius:12, alignSelf:'flex-start', marginLeft: graphOffset }}>
+          <EvalSparkline series={evalSeries} height={138} onClickIndex={(i)=>props.onRebuildTo(i+1)} />
+        </div>
+      ) : null}
+
+      {/* Controls at the bottom of the column */}
+      <div style={{ ...ui.col, width: boardWidth, gap: 12, marginTop: 6 }}>
+        <div style={{ ...ui.row, justifyContent:'center', gap: 10, flexWrap: 'wrap' }}>
+          <button style={ui.btnGhost} onClick={() => onRebuildTo(0)} disabled={ply === 0}>First</button>
+          <button style={ui.btnGhost} onClick={() => onRebuildTo(Math.max(0, ply - 1))} disabled={ply === 0}>Back</button>
+          <button style={ui.btnGhost} onClick={() => onRebuildTo(Math.min(movesUci.length, ply + 1))} disabled={ply >= movesUci.length}>Forward</button>
+          <button style={ui.btnGhost} onClick={() => onRebuildTo(movesUci.length)} disabled={ply >= movesUci.length}>End</button>
+          <button style={ui.btnGhost} onClick={onNewGame}>New</button>
+        </div>
+        <div style={{ ...ui.row, justifyContent:'center', gap: 12, flexWrap: 'wrap' }}>
+          <button style={ui.btn} onClick={onEngineMove} disabled={engineBusy}>Engine Move</button>
+          <label style={{ ...ui.checkboxLabel }}>
+            <input type="checkbox" checked={autoReply} onChange={e => setAutoReply(e.target.checked)} />
+            Auto reply
+          </label>
+          <button
+            style={ui.btn}
+            onClick={() => {
+              onOrientationChange?.('black');
+              if (ply === 0) onEngineMove();
+            }}
+            disabled={engineBusy || !onOrientationChange}
+            title="Flip to Black and, if at start, let engine make the first move"
+          >
+            Play as Black
+          </button>
+          <button
+            style={ui.btnGhost}
+            onClick={() => onOrientationChange?.(orientation === 'white' ? 'black' : 'white')}
+            disabled={!onOrientationChange}
+            title="Flip board"
+          >
+            Flip
+          </button>
+        </div>
       </div>
     </div>
   );

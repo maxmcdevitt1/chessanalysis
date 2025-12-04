@@ -10,8 +10,8 @@ export function useGlobalArrowNav({ ply, total, onRebuildTo, enabled = true }: U
       if (isTyping || e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.key === 'ArrowLeft') { e.preventDefault(); onRebuildTo(Math.max(0, ply - 1)); }
       else if (e.key === 'ArrowRight') { e.preventDefault(); onRebuildTo(Math.min(total, ply + 1)); }
-      else if (e.key === 'Home') { e.preventDefault(); onRebuildTo(0); }
-      else if (e.key === 'End') { e.preventDefault(); onRebuildTo(total); }
+      else if (e.key === 'Home' || e.key === 'ArrowUp') { e.preventDefault(); onRebuildTo(0); }
+      else if (e.key === 'End' || e.key === 'ArrowDown') { e.preventDefault(); onRebuildTo(total); }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
