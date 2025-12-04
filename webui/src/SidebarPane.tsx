@@ -18,6 +18,7 @@ type Review = {
   blackAcc: number | null;
   estEloWhite?: number | null;
   estEloBlack?: number | null;
+  quality?: { W: QualityTally; B: QualityTally };
 } | null;
 
 type QualityTally = {
@@ -67,6 +68,7 @@ type SidebarProps = {
   avgCplB?: number | null;
   result?: '1-0' | '0-1' | '1/2-1/2' | '*';
   ply: number;
+  showMoves?: boolean;
   /** Number of plies from start that are in book (force-tag as "Book"). */
   bookDepth?: number;
   /** Per-ply mask telling whether each ply is inside book. */
@@ -165,14 +167,30 @@ function TagIcon({ tag, size = 24 }: { tag?: string | null; size?: number }) {
   }
 }
 
+function Pill({ label, value }: { label: string; value?: number }) {
+  const display = Number.isFinite(value) ? value : '—';
+  return (
+    <span style={{
+      padding: '2px 8px',
+      borderRadius: 999,
+      background: '#1f1f1f',
+      border: '1px solid #333',
+      fontSize: 12,
+      color: '#eaeaea',
+    }}>
+      {label}: <strong>{display}</strong>
+    </span>
+  );
+}
+
 /* --------------------------------- Styles ---------------------------------- */
 /** All font sizes are ≥ 18px per your requirement */
 const S = {
   // Outer sidebar: fixed height viewport; flex column; content scrolls.
   wrap: {
     height: '100vh',
-    padding: 12,
-    borderLeft: '1px solid #222',
+    padding: 14,
+    borderLeft: '1px solid #1f1f1f',
     display: 'flex',
     flexDirection: 'column' as const,
     minWidth: 420,
@@ -180,7 +198,7 @@ const S = {
     lineHeight: 1.4,
     color: '#ddd',
     boxSizing: 'border-box' as const,
-    background: '#26231f',
+    background: 'linear-gradient(180deg, #151310 0%, #0f0d0b 100%)',
   },
 
   // Header row (non-scrolling)
@@ -190,7 +208,7 @@ const S = {
     alignItems: 'center',
     gap: 8,
     paddingBottom: 8,
-    borderBottom: '1px solid #222',
+    borderBottom: '1px solid #1f1f1f',
   },
 
   // Scrollable content
@@ -204,61 +222,66 @@ const S = {
 
   // Reusable panel styling
   section: {
-    border: '1px solid #333',
-    borderRadius: 8,
-    padding: 12,
+    border: '1px solid #2b2b2b',
+    borderRadius: 12,
+    padding: 14,
     marginTop: 12,
-    background: '#111',
+    background: 'linear-gradient(180deg, #1d1a17 0%, #141210 100%)',
+    boxShadow: '0 10px 28px rgba(0,0,0,0.28)',
   },
 
   title: {
     fontWeight: 700 as const,
     marginBottom: 8,
-    fontSize: 18,
+    fontSize: 19,
+    letterSpacing: 0.2,
+    color: '#f3f0ea',
   },
 
   small: {
     fontSize: 18,
-    opacity: 0.8,
+    opacity: 0.82,
+    color: '#c8cbc9',
   },
 
   button: {
     fontSize: 18,
     padding: '6px 12px',
     borderRadius: 8,
-    border: '1px solid #333',
-    background: '#1a1a1a',
+    border: '1px solid #2d2d2d',
+    background: '#1f1f1f',
     color: '#eee',
     cursor: 'pointer',
+    transition: 'all 120ms ease',
   },
 
   pill: {
     fontSize: 18,
     padding: '4px 10px',
     borderRadius: 999,
-    border: '1px solid #333',
-    background: '#1a1a1a',
-    color: '#eee',
+    border: '1px solid #2d2d2d',
+    background: '#1c1b18',
+    color: '#f0f0f0',
     cursor: 'pointer',
     whiteSpace: 'nowrap' as const,
   },
 
   input: {
     fontSize: 18,
-    background: '#0e0e0e',
-    color: '#eee',
-    border: '1px solid #333',
-    borderRadius: 8,
-    padding: '8px 10px',
+    background: '#0f0f0f',
+    color: '#f3f3f3',
+    border: '1px solid #2a2a2a',
+    borderRadius: 10,
+    padding: '9px 12px',
   },
 
   select: {
     fontSize: 18,
-    background: '#0e0e0e',
-    color: '#eee',
-    border: '1px solid #333',
-    borderRadius: 8,
-    padding: '6px 10px',
+    background: '#0f0f0f',
+    color: '#f3f3f3',
+    border: '1px solid #2a2a2a',
+    borderRadius: 10,
+    padding: '7px 10px',
   },
 
   table: {
@@ -290,7 +313,8 @@ export default function SidebarPane(props: SidebarProps) {
     blackAcc = null,
     avgCplW = null,
     avgCplB = null,
-    result = '*',
+  result = '*',
+    showMoves = true,
     bookUci: _bookUci, onApplyBookMove: _onApplyBookMove,
     onLoadPgnText, onLoadPgnFile,
     analyzing, progress, onAnalyze, onAnalyzeFast, onStopAnalyze,
@@ -489,16 +513,57 @@ export default function SidebarPane(props: SidebarProps) {
         {/* Game Review summary */}
         <div style={S.section}>
           <div style={S.title}>Game Review</div>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
-            <div>White accuracy: <strong>{review?.whiteAcc != null ? `${Math.round(review.whiteAcc)}%` : '—'}</strong></div>
-            <div>Black accuracy: <strong>{review?.blackAcc != null ? `${Math.round(review.blackAcc)}%` : '—'}</strong></div>
+
+          {/* Accuracy + CPL */}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8, marginBottom: 10 }}>
+            <div>
+              White accuracy:{' '}
+              <strong>{review?.whiteAcc != null ? `${Math.round(review.whiteAcc)}%` : '—'}</strong>
+            </div>
+            <div>
+              Black accuracy:{' '}
+              <strong>{review?.blackAcc != null ? `${Math.round(review.blackAcc)}%` : '—'}</strong>
+            </div>
             <div>
               Avg CPL (W/B):{' '}
               <strong>{review?.avgCplW != null ? Math.round(review.avgCplW) : '—'}</strong> /{' '}
               <strong>{review?.avgCplB != null ? Math.round(review.avgCplB) : '—'}</strong>
             </div>
           </div>
-          <div style={{ ...S.small, marginTop: 6 }}>
+
+          {/* Move quality counts */}
+          <div style={{
+            display: 'grid',
+            gridTemplateColumns: '1fr 1fr',
+            gap: 10,
+            padding: '8px 10px',
+            background: '#0f0f0f',
+            border: '1px solid #222',
+            borderRadius: 8,
+          }}>
+            <div>
+              <div style={S.small}>White moves</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
+                <Pill label="Best" value={review?.quality?.W?.best} />
+                <Pill label="Good" value={review?.quality?.W?.good} />
+                <Pill label="Inacc" value={review?.quality?.W?.inaccuracy ?? review?.quality?.W?.inacc} />
+                <Pill label="Mist" value={review?.quality?.W?.mistake} />
+                <Pill label="Blun" value={review?.quality?.W?.blunder} />
+              </div>
+            </div>
+            <div>
+              <div style={S.small}>Black moves</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 4 }}>
+                <Pill label="Best" value={review?.quality?.B?.best} />
+                <Pill label="Good" value={review?.quality?.B?.good} />
+                <Pill label="Inacc" value={review?.quality?.B?.inaccuracy ?? review?.quality?.B?.inacc} />
+                <Pill label="Mist" value={review?.quality?.B?.mistake} />
+                <Pill label="Blun" value={review?.quality?.B?.blunder} />
+              </div>
+            </div>
+          </div>
+
+          <div style={{ ...S.small, marginTop: 8 }}>
             Accuracy is based on average centipawn loss (lower CPL → higher accuracy).
           </div>
         </div>
@@ -524,66 +589,67 @@ export default function SidebarPane(props: SidebarProps) {
           </div>
         </div>
 
-        {/* Moves table (stays within the scrollable column) — show "Opening" for book plies */}
-        <div style={S.section}>
-          <div style={S.title}>Moves</div>
+        {showMoves && (
+          <div style={S.section}>
+            <div style={S.title}>Moves</div>
 
-          {/* Optional: sticky table header for long lists */}
-          <div style={{ maxHeight: 480, overflowY: 'auto' }}>
-            <table style={S.table}>
-              <thead>
-                <tr>
-                  <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>#</th>
-                  <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Side</th>
-                  <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>SAN</th>
-                  <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Best</th>
-                  <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Eval</th>
-                  <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Icon</th>
-                  <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Tag</th>
-                </tr>
-              </thead>
-              <tbody>
-                {moveEvals.map((m, i) => {
-                  const isCurrent = i === ply - 1;
-                  const isOpening = (i < bookMask.length ? bookMask[i] : i < bookDepth);
-                  const iconTag = isOpening ? 'Book' : (m.tag || '');
-                  const labelTag = isOpening ? 'Opening' : (m.tag || '');
-                  return (
-                    <tr
-                      key={i}
-                      onClick={() => onRebuildTo(i + 1)}
-                      style={{
-                        cursor: 'pointer',
-                        background: isCurrent ? '#1b1b1b' : 'transparent',
-                      }}
-                    >
-                      <td style={S.thtd}>{m.moveNo}</td>
-                      <td style={S.thtd}>{m.side === 'White' ? 'W' : 'B'}</td>
-                      <td style={S.thtd}>{m.san}</td>
-                      <td style={S.thtd}>{m.best || ''}</td>
-                      <td style={S.thtd}>
-                        {(() => {
-                          // Prefer White-POV number shipped by analysis if present
-                          const whiteAfter =
-                            typeof m.cpAfterWhite === 'number'
-                              ? m.cpAfterWhite
-                              : (typeof m.cpAfter === 'number'
-                                  ? ((m.side === 'White' || m.side === 'W') ? -m.cpAfter : m.cpAfter)
-                                  : null);
-                          return whiteAfter == null ? '—' : (whiteAfter / 100).toFixed(1);
-                        })()}
-                      </td>
-                      <td style={S.thtd}>
-                        <TagIcon tag={iconTag} size={20} />
-                      </td>
-                      <td style={S.thtd}>{labelTag}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            {/* Optional: sticky table header for long lists */}
+            <div style={{ maxHeight: 480, overflowY: 'auto' }}>
+              <table style={S.table}>
+                <thead>
+                  <tr>
+                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>#</th>
+                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Side</th>
+                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>SAN</th>
+                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Best</th>
+                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Eval</th>
+                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Icon</th>
+                    <th style={{ ...S.thtd, position: 'sticky', top: 0, background: '#111' }}>Tag</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {moveEvals.map((m, i) => {
+                    const isCurrent = i === ply - 1;
+                    const isOpening = (i < bookMask.length ? bookMask[i] : i < bookDepth);
+                    const iconTag = isOpening ? 'Book' : (m.tag || '');
+                    const labelTag = isOpening ? 'Opening' : (m.tag || '');
+                    return (
+                      <tr
+                        key={i}
+                        onClick={() => onRebuildTo(i + 1)}
+                        style={{
+                          cursor: 'pointer',
+                          background: isCurrent ? '#1b1b1b' : 'transparent',
+                        }}
+                      >
+                        <td style={S.thtd}>{m.moveNo}</td>
+                        <td style={S.thtd}>{m.side === 'White' ? 'W' : 'B'}</td>
+                        <td style={S.thtd}>{m.san}</td>
+                        <td style={S.thtd}>{m.best || ''}</td>
+                        <td style={S.thtd}>
+                          {(() => {
+                            // Show evaluation AFTER the move in White POV (not cumulative CPL).
+                            const whiteAfter =
+                              typeof m.cpAfterWhite === 'number'
+                                ? m.cpAfterWhite
+                                : (typeof m.cpAfter === 'number'
+                                    ? ((m.side === 'White' || m.side === 'W') ? -m.cpAfter : m.cpAfter)
+                                    : null);
+                            return whiteAfter == null ? '—' : (whiteAfter / 100).toFixed(1);
+                          })()}
+                        </td>
+                        <td style={S.thtd}>
+                          <TagIcon tag={iconTag} size={20} />
+                        </td>
+                        <td style={S.thtd}>{labelTag}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
+        )}
       </div>
       {/* ---------- /scroll ---------- */}
     </aside>

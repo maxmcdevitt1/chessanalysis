@@ -278,37 +278,41 @@ export default function BoardPane(props: BoardPaneProps) {
           )}
         </div>
 
-        {/* Controls under the board (bigger, more readable) */}
-        <div style={{ ...ui.row, width: boardWidth }}>
-          <button style={ui.btnGhost} onClick={() => onRebuildTo(0)} disabled={ply === 0}>First</button>
-          <button style={ui.btnGhost} onClick={() => onRebuildTo(Math.max(0, ply - 1))} disabled={ply === 0}>Back</button>
-          <button style={ui.btn} onClick={onEngineMove} disabled={engineBusy}>Engine Move</button>
-          <button style={ui.btnGhost} onClick={() => onRebuildTo(Math.min(movesUci.length, ply + 1))} disabled={ply >= movesUci.length}>Forward</button>
-          <button style={ui.btnGhost} onClick={() => onRebuildTo(movesUci.length)} disabled={ply >= movesUci.length}>End</button>
-          <button
-            style={ui.btnGhost}
-            onClick={() => onOrientationChange?.(orientation === 'white' ? 'black' : 'white')}
-            disabled={!onOrientationChange}
-            title="Flip board"
-          >
-            Flip
-          </button>
-          <button
-            style={ui.btn}
-            onClick={() => {
-              onOrientationChange?.('black');
-              if (ply === 0) onEngineMove();
-            }}
-            disabled={engineBusy || !onOrientationChange}
-            title="Flip to Black and, if at start, let engine make the first move"
-          >
-            Play as Black
-          </button>
-          <label style={{ ...ui.checkboxLabel }}>
-            <input type="checkbox" checked={autoReply} onChange={e => setAutoReply(e.target.checked)} />
-            Auto reply
-          </label>
-          <button style={ui.btnGhost} onClick={onNewGame}>New</button>
+        {/* Controls under the board */}
+        <div style={{ ...ui.col, width: boardWidth, gap: 12 }}>
+          <div style={{ ...ui.row, justifyContent:'center', gap: 8, flexWrap: 'wrap' }}>
+            <button style={ui.btnGhost} onClick={() => onRebuildTo(0)} disabled={ply === 0}>First</button>
+            <button style={ui.btnGhost} onClick={() => onRebuildTo(Math.max(0, ply - 1))} disabled={ply === 0}>Back</button>
+            <button style={ui.btnGhost} onClick={() => onRebuildTo(Math.min(movesUci.length, ply + 1))} disabled={ply >= movesUci.length}>Forward</button>
+            <button style={ui.btnGhost} onClick={() => onRebuildTo(movesUci.length)} disabled={ply >= movesUci.length}>End</button>
+            <button style={ui.btnGhost} onClick={onNewGame}>New</button>
+          </div>
+          <div style={{ ...ui.row, justifyContent:'center', gap: 10, flexWrap: 'wrap' }}>
+            <button style={ui.btn} onClick={onEngineMove} disabled={engineBusy}>Engine Move</button>
+            <label style={{ ...ui.checkboxLabel }}>
+              <input type="checkbox" checked={autoReply} onChange={e => setAutoReply(e.target.checked)} />
+              Auto reply
+            </label>
+            <button
+              style={ui.btn}
+              onClick={() => {
+                onOrientationChange?.('black');
+                if (ply === 0) onEngineMove();
+              }}
+              disabled={engineBusy || !onOrientationChange}
+              title="Flip to Black and, if at start, let engine make the first move"
+            >
+              Play as Black
+            </button>
+            <button
+              style={ui.btnGhost}
+              onClick={() => onOrientationChange?.(orientation === 'white' ? 'black' : 'white')}
+              disabled={!onOrientationChange}
+              title="Flip board"
+            >
+              Flip
+            </button>
+          </div>
         </div>
 
         {/* Optional sparkline under the board */}

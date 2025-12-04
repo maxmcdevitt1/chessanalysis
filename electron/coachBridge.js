@@ -9,8 +9,10 @@ const https = require('https');
 const DEFAULT_MODEL = process.env.COACH_MODEL || 'llama3.2:3b-instruct-q5_K_M';
 const COACH_DEBUG = process.env.COACH_DEBUG === '1';
 const BATCH_PLIES = parseInt(process.env.COACH_BATCH_PLIES || '12', 10); // per-call plies
-const TOKENS_PER_ITEM = parseInt(process.env.COACH_TOKENS_PER_ITEM || '90', 10);
-const COACH_OUTPUT_MODE = (process.env.COACH_OUTPUT_MODE || 'ndjson').toLowerCase(); // 'ndjson' or 'array'
+// Give the model more headroom per item so it doesn't truncate early
+const TOKENS_PER_ITEM = parseInt(process.env.COACH_TOKENS_PER_ITEM || '140', 10);
+// Force array mode + JSON schema so we *always* parse a JSON array
+const COACH_OUTPUT_MODE = (process.env.COACH_OUTPUT_MODE || 'array').toLowerCase(); // 'array' or 'ndjson'
 const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 const TIMEOUT_MS = Number(process.env.COACH_TIMEOUT_MS || 30000);
 const AUTO_PULL = String(process.env.AUTO_PULL_COACH || '0') === '1';
@@ -81,7 +83,10 @@ function buildSystemPrompt() {
     'Do NOT change provided tags or numbers. No markdown.',
   ];
   if (COACH_OUTPUT_MODE === 'array') {
-    return common.concat(['Return ONLY a JSON ARRAY with EXACTLY N objects, SAME ORDER.']).join(' ');
+    return common.concat([
+      'Return ONLY a JSON ARRAY with EXACTLY N objects, SAME ORDER.',
+      'Conform strictly to the provided JSON schema.',
+    ]).join(' ');
   }
   return common.concat(['Return ONLY NDJSON: EXACTLY N LINES, each line is ONE JSON object. No brackets, no commas, no prose.']).join(' ');
 }
@@ -108,7 +113,30 @@ async function callModelStructured({ model, prompt, expected }) {
     stream: false,
     system: buildSystemPrompt(),
     prompt,
-    ...(COACH_OUTPUT_MODE === 'array' ? { format: 'json' } : {}),
+    ...(COACH_OUTPUT_MODE === 'array'
+      ? {
+          // Ask Ollama to produce schema-conformant JSON
+          format: {
+            type: 'json_schema',
+            json_schema: {
+              name: 'CoachNotes',
+              schema: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['moveIndex', 'title', 'text'],
+                  properties: {
+                    moveIndex: { type: 'integer' },
+                    title: { type: 'string', maxLength: 60 },
+                    text: { type: 'string', maxLength: 280 }
+                  }
+                }
+              }
+            }
+          }
+        }
+      : {}),
     options: {
       temperature: 0.1,
       top_p: 0.85,
@@ -178,10 +206,8 @@ async function callModelStructured({ model, prompt, expected }) {
   }
 
   if (!asItems.length) {
-    if (COACH_DEBUG) {
-      console.error('[coach] JSON parse failed. Raw model output (first 1500 chars):\n',
-        raw.slice(0, 1500));
-    }
+    const rawSample = candidates.find((x) => typeof x === 'string') || JSON.stringify(candidates[0] || null);
+    console.error('[coach] model error: LLM returned no valid JSON array; expected:', expected, 'raw sample:', (rawSample || '').toString().slice(0, 400));
     return [];
   }
   return asItems;
@@ -247,8 +273,17 @@ async function generateNotes(inputs) {
     let items = [];
     try {
       items = await callModelStructured({ model, prompt, expected });
+      // If the model still gave nothing, retry once with half batch size (more focused)
+      if (!items.length && expected > 1) {
+        if (COACH_DEBUG) console.warn('[coach] retrying batch with smaller size due to empty result');
+        const half = Math.max(1, Math.floor(expected / 2));
+        const head = batch.slice(0, half);
+        const prompt2 = buildBatchPrompt({ summary, batch: head, expected: head.length });
+        const items2 = await callModelStructured({ model, prompt: prompt2, expected: head.length });
+        items = items2;
+      }
     } catch (e) {
-      console.error('[coach] model error:', e.message);
+      console.error('[coach] model error:', e && (e.stack || e.message || e));
       items = [];
     }
     let norm = normalizeItems(items, batch);

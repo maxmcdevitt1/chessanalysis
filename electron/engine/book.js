@@ -1,13 +1,17 @@
 'use strict';
 
-// Lightweight opening-book probe for early plies.
-// Loads once from bundled JSON sources; returns the highest-weight move.
+// Opening book helper: tries Polyglot .bin first, then bundled JSON/eco sources.
 
 const fs = require('fs');
 const path = require('path');
 
+let Polyglot = null;
+try { Polyglot = require('polyglot-book'); } catch {}
+if (!Polyglot) { try { Polyglot = require('chess-polyglot'); } catch {} }
+
 const ROOT_DIR = path.join(__dirname, '..', '..');
-const SOURCES = [
+const DEFAULT_BOOK = path.join(ROOT_DIR, 'data', 'book.bin');
+const JSON_SOURCES = [
   path.join(ROOT_DIR, 'data', 'opening-book.json'),
   path.join(ROOT_DIR, 'webui', 'public', 'opening-book.json'),
   path.join(ROOT_DIR, 'webui', 'public', 'eco.json'),
@@ -15,11 +19,25 @@ const SOURCES = [
 ];
 const MAX_PLY = 24; // up to 12 full moves
 
-let BOOK_CACHE = null;
+let POLYGLOT_BOOK = null; // false => unavailable, object => ready
+let JSON_BOOK_CACHE = null;
 
 function normFenKey(fen) {
   const parts = String(fen || '').trim().split(/\s+/);
   return parts.slice(0, 4).join(' ');
+}
+
+function ensurePolyglot(bookPath = DEFAULT_BOOK) {
+  if (POLYGLOT_BOOK !== null) return POLYGLOT_BOOK;
+  if (!Polyglot) { POLYGLOT_BOOK = false; return POLYGLOT_BOOK; }
+  if (!fs.existsSync(bookPath)) { POLYGLOT_BOOK = false; return POLYGLOT_BOOK; }
+  try {
+    POLYGLOT_BOOK = new Polyglot(bookPath);
+  } catch (e) {
+    console.warn('[book] polyglot load failed:', e?.message || e);
+    POLYGLOT_BOOK = false;
+  }
+  return POLYGLOT_BOOK;
 }
 
 function pgnToSanTokens(pgn) {
@@ -52,7 +70,7 @@ function toUciLine(row, ChessCtor) {
   else if (typeof row?.pgn === 'string' && row.pgn.trim()) san = pgnToSanTokens(row.pgn);
   if (!san.length) return [];
 
-  const ch = new ChessCtor();
+  const ch = new (require('chess.js').Chess)();
   const uci = [];
   for (const tokRaw of san) {
     const tok = String(tokRaw || '').replace(/[+#?!]+/g, '');
@@ -63,13 +81,12 @@ function toUciLine(row, ChessCtor) {
   return uci;
 }
 
-function loadBook() {
-  if (BOOK_CACHE !== null) return BOOK_CACHE;
+function loadJsonBook() {
+  if (JSON_BOOK_CACHE !== null) return JSON_BOOK_CACHE;
   let book = new Map();
   try {
-    const { Chess } = require('chess.js');
     let rows = [];
-    for (const p of SOURCES) {
+    for (const p of JSON_SOURCES) {
       if (!fs.existsSync(p)) continue;
       try {
         const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
@@ -79,15 +96,15 @@ function loadBook() {
       }
     }
     if (!rows.length) {
-      BOOK_CACHE = book;
+      JSON_BOOK_CACHE = book;
       return book;
     }
 
     const tmp = new Map();
     for (const r of rows) {
-      const line = toUciLine(r, Chess);
+      const line = toUciLine(r);
       if (!line.length) continue;
-      const ch = new Chess();
+      const ch = new (require('chess.js').Chess)();
       for (let i = 0; i < line.length && i < MAX_PLY; i++) {
         const fenKey = normFenKey(ch.fen());
         const move = line[i];
@@ -104,12 +121,12 @@ function loadBook() {
       arr.sort((a, b) => b.weight - a.weight);
       book.set(k, arr);
     }
-    BOOK_CACHE = book;
+    JSON_BOOK_CACHE = book;
     return book;
   } catch (e) {
-    console.warn('[book] unavailable:', e?.message || e);
-    BOOK_CACHE = new Map();
-    return BOOK_CACHE;
+    console.warn('[book] json unavailable:', e?.message || e);
+    JSON_BOOK_CACHE = new Map();
+    return JSON_BOOK_CACHE;
   }
 }
 
@@ -119,15 +136,34 @@ function probeBookMove(fen, opts = {}) {
   const moveNum = Number(parts[5]) || 1;
   if (moveNum > maxFullMoves) return null;
 
-  const book = loadBook();
+  // 1) Polyglot .bin
+  const poly = ensurePolyglot(opts.path || DEFAULT_BOOK);
+  if (poly) {
+    try {
+      const entries = poly.find(fen) || [];
+      if (entries.length) {
+        entries.sort((a, b) => (b.weight || 0) - (a.weight || 0));
+        const top = entries[0];
+        const uci = top.uci || (top.move ? (top.move.from + top.move.to + (top.move.promotion || '')) : null);
+        if (uci) return { uci, weight: top.weight };
+      }
+    } catch (e) {
+      console.warn('[book] polyglot probe failed:', e?.message || e);
+    }
+  }
+
+  // 2) JSON fallback
+  const book = loadJsonBook();
   const moves = book.get(normFenKey(fen));
   if (!moves || !moves.length) return null;
   return moves[0];
 }
 
 function bookSize() {
-  const book = loadBook();
+  const poly = ensurePolyglot(DEFAULT_BOOK);
+  if (poly && typeof poly.size === 'number') return poly.size;
+  const book = loadJsonBook();
   return typeof book?.size === 'number' ? book.size : 0;
 }
 
-module.exports = { probeBookMove, bookSize };
+module.exports = { probeBookMove, ensurePolyglot: ensurePolyglot, bookSize };

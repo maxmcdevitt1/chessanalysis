@@ -138,13 +138,44 @@ function eloToEvalMovetimeMs(elo: number) {
   return Math.max(120, Math.min(600, base));
 }
 
-// Low-Elo blunder probability (adds human-like mistakes)
-function blunderProbability(uiElo: number) {
-  if (uiElo <= 500) return 0.30;
-  if (uiElo <= 800) return 0.20;
-  if (uiElo <= 1200) return 0.08;
-  if (uiElo <= 1400) return 0.05;
-  return 0.02;
+// Estimate tactical/decision complexity of the current position.
+// Simple, fast heuristic (no extra engine calls):
+//  - nMoves: total legal moves (branching factor)
+//  - nCaps:  number of capturing moves
+//  - nChecks:number of checking moves
+function positionComplexity(fen: string): { nMoves: number; nCaps: number; nChecks: number } {
+  try {
+    const ch = new Chess(fen);
+    const moves = ch.moves({ verbose: true }) as any[];
+    const nMoves = moves.length;
+    let nCaps = 0, nChecks = 0;
+    for (const m of moves) {
+      if (m.flags && String(m.flags).includes('c')) nCaps++;
+      if (typeof m.san === 'string' && m.san.includes('+')) nChecks++;
+    }
+    return { nMoves, nCaps, nChecks };
+  } catch {
+    return { nMoves: 0, nCaps: 0, nChecks: 0 };
+  }
+}
+
+// Blunder probability depends on Elo *and* complexity.
+// We scale the base rate by a multiplier derived from branching factor and tactics.
+function blunderProbability(uiElo: number, cx: { nMoves: number; nCaps: number; nChecks: number }) {
+  let base =
+    uiElo <= 500  ? 0.30 :
+    uiElo <= 800  ? 0.20 :
+    uiElo <= 1200 ? 0.08 :
+    uiElo <= 1400 ? 0.05 : 0.02;
+
+  const eloScale = uiElo < 1000 ? 1.0 : uiElo < 1300 ? 0.8 : uiElo < 1600 ? 0.6 : 0.4;
+  const bigBranch   = cx.nMoves >= 35 ? 0.50 : cx.nMoves >= 28 ? 0.30 : cx.nMoves >= 22 ? 0.15 : 0.0;
+  const manyCaps    = cx.nCaps  >= 8  ? 0.30 : cx.nCaps  >= 5  ? 0.20 : cx.nCaps  >= 3  ? 0.10 : 0.0;
+  const manyChecks  = cx.nChecks>= 3  ? 0.20 : cx.nChecks>= 2  ? 0.12 : cx.nChecks>= 1  ? 0.06 : 0.0;
+  const mult = 1 + eloScale * (bigBranch + manyCaps + manyChecks);
+
+  const p = Math.max(0, Math.min(0.9, base * mult));
+  return p;
 }
 
 // Robust mover and POV helpers
@@ -306,6 +337,7 @@ export default function App() {
   const [coachNotes, setCoachNotes] = useState<CoachNote[] | null>(null);
   const [coachBusy, setCoachBusy] = useState(false);
   const [openingInfo, setOpeningInfo] = useState<{ eco:string; name:string; variation?:string } | string | null>(null);
+  // --- analysis/book UI state ---
   const [bookDepth, setBookDepth] = useState(0);
   const [bookMask, setBookMask] = useState<boolean[]>([]);
   const [analyzing, setAnalyzing] = useState(false);
@@ -319,7 +351,7 @@ export default function App() {
   const replyScheduled = useRef(false);
   const replyInflight = useRef(false);
 
-  // options
+  // user-configurable options
   const [engineStrength, setEngineStrength] = useState(() =>
     getNumber(ENGINE_STRENGTH_KEY, 12)
   );
@@ -682,7 +714,7 @@ export default function App() {
 
       const fens = seq.map((s) => s.fenBefore);
       const elo = uiEloFromStrength(engineStrength);
-      const timeoutMs = Math.max(4000, fens.length * 1200);
+      const timeoutMs = Math.max(8000, fens.length * 2000);
       const resArr = await withTimeout(reviewFast(fens, { elo }), timeoutMs);
       const results = Array.isArray(resArr) ? resArr : [];
 
@@ -706,7 +738,10 @@ export default function App() {
         const cpBeforeWhite = bestForMover == null ? null : (info.side === 'White' ? bestForMover : -bestForMover);
         // Store cpAfter as returned (opponent POV); keep white-POV version for display if needed
         const cpAfterStored = afterOpponent;
-        const cpAfterWhite = afterOpponent == null ? null : (info.side === 'White' ? afterOpponent : -afterOpponent);
+        // Convert opponent-POV score after the move to White POV for charts/accuracy.
+        const cpAfterWhite = afterOpponent == null
+          ? null
+          : (info.side === 'White' ? -afterOpponent : afterOpponent);
 
         let cpl: number | null = null;
         if (bestForMover != null && afterOpponent != null) {
@@ -783,10 +818,11 @@ export default function App() {
 
       let uci = (res?.bestMove as string | undefined) || '';
 
-      // Low-Elo randomness/blunder (disabled for Elo ≥ 1800 and during analysis)
-      const p = blunderProbability(elo);
-      const allowMistakes = (elo < 1800) && !analyzing;
-      if (allowMistakes && Math.random() < p) {
+      // Low-Elo randomness/blunder (disabled for Elo ≥ 1800 and during analysis/book hits)
+      const cx = positionComplexity(fenNow);
+      const p = blunderProbability(elo, cx);
+      const allowMistakes = (elo < 1800) && !analyzing && !res?.book && !res?.fromBook;
+      if (allowMistakes && p > 0 && Math.random() < p) {
         const coin = Math.random();
         const alt = coin < 0.5
           ? pickRandomLegalUci(fenNow)
@@ -877,15 +913,23 @@ export default function App() {
       if (m?.tag === 'Book' || (m as any)?.isBook) continue; // exclude book moves from ACPL
       const side: 'W' | 'B' = moverSideOf(m);
 
-      const beforeCpMover = (typeof (m as any).cpBefore === 'number') ? (m as any).cpBefore : undefined;
+      const beforeCpMover = (() => {
+        if (typeof (m as any).cpBefore === 'number') {
+          // cpBefore is White POV; flip for Black to get mover POV
+          return side === 'W' ? (m as any).cpBefore : -(m as any).cpBefore;
+        }
+        return undefined;
+      })();
       const bestBeforeCp =
         (typeof (m as any).bestCpBefore === 'number') ? (m as any).bestCpBefore :
         (typeof (m as any).cpBestBefore  === 'number') ? (m as any).cpBestBefore  : undefined;
 
       const afterCpMover =
-        (typeof (m as any).cpAfterWhite === 'number')
-          ? ((side === 'W' && typeof (m as any).cpAfter === 'number') ? -(m as any).cpAfter : (m as any).cpAfterWhite)
-          : afterToMoverPOV(m) ?? undefined;
+        typeof (m as any).cpAfterWhite === 'number'
+          ? (side === 'W' ? (m as any).cpAfterWhite : -(m as any).cpAfterWhite) // cpAfterWhite is always White POV
+          : (typeof (m as any).cpAfter === 'number'
+              ? -(m as any).cpAfter   // cpAfter is opponent POV; flip to mover
+              : afterToMoverPOV(m) ?? undefined);
       if (typeof beforeCpMover === 'number' && typeof afterCpMover === 'number') {
         (m as any).deltaCpMover = afterCpMover - beforeCpMover;
       }
@@ -942,6 +986,7 @@ export default function App() {
     try {
       if (coachBusy) return;
       setCoachBusy(true);
+      // Build a compact payload for the coach model; keep only essentials.
       const inputs = {
         summary: review || null,
         moments: coachMoments,
@@ -949,17 +994,20 @@ export default function App() {
       };
       const res: any = await generateCoachNotes(inputs);
       if (!res || (res as any).offline) {
-        setCoachNotes([]);
+        const reason = (res as any)?.reason || 'offline';
+        const msg = `Coach unavailable (${reason}). Start OLLAMA or set COACH_MODEL.`;
+        setCoachNotes([{ type: 'summary', text: msg } as any]);
         return;
       }
       if (Array.isArray(res.notes)) {
         setCoachNotes(res.notes as any);
       } else {
-        setCoachNotes([]);
+        setCoachNotes([{ type: 'summary', text: 'No coach notes returned.' } as any]);
       }
     } catch (e) {
       console.error('[coach] generate error', e);
-      setCoachNotes([]);
+      const msg = e instanceof Error ? e.message : String(e || 'unknown error');
+      setCoachNotes([{ type: 'summary', text: `Coach error: ${msg}` } as any]);
     } finally {
       setCoachBusy(false);
     }
@@ -1022,6 +1070,81 @@ export default function App() {
   const hasAnalysis = !!(currentMoveEval && currentMoveEval.tag);
 
   const panelWidth = sidebarOpen ? 480 : 28;
+  const movesPanelWidth = 320;
+
+  const MovePane = ({ list, bookMask, bookDepth, onJump, currentPly }: {
+    list: typeof moveEvals;
+    bookMask: boolean[];
+    bookDepth: number;
+    onJump: (n: number) => void;
+    currentPly: number;
+  }) => {
+    const rows = list || [];
+    const evalLabel = (m: any) => {
+      const whiteAfter =
+        typeof m?.cpAfterWhite === 'number'
+          ? m.cpAfterWhite
+          : (typeof m?.cpAfter === 'number'
+              ? ((m.side === 'White' || m.side === 'W') ? -m.cpAfter : m.cpAfter)
+              : null);
+      return whiteAfter == null ? '—' : (whiteAfter / 100).toFixed(1);
+    };
+    const tagColor = (tag: string) => {
+      if (tag === 'Blunder') return '#ff6b6b';
+      if (tag === 'Mistake') return '#f5b942';
+      if (tag === 'Best' || tag === 'Genius') return '#6dd679';
+      if (tag === 'Book' || tag === 'Opening') return '#8ab5ff';
+      return '#cfd5dd';
+    };
+    return (
+      <div style={{
+        width: movesPanelWidth,
+        background: '#1d1b18',
+        border: '1px solid #2a2a2a',
+        borderRadius: 10,
+        padding: 12,
+        boxSizing: 'border-box' as const,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+      }}>
+        <div style={{ fontWeight: 700, fontSize: 16, color: '#eee' }}>Moves</div>
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
+            <thead>
+              <tr>
+                {['#', 'SAN', 'Best', 'Eval', 'Tag'].map(h => (
+                  <th key={h} style={{ textAlign: 'left', padding: '4px 2px', color: '#aaa', borderBottom: '1px solid #2f2f2f' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((m, i) => {
+                const isOpening = (i < bookMask.length ? bookMask[i] : i < bookDepth);
+                const tag = isOpening ? 'Book' : (m.tag || 'Good');
+                return (
+                  <tr
+                    key={i}
+                    onClick={() => onJump(i + 1)}
+                    style={{
+                      cursor: 'pointer',
+                      background: i === currentPly - 1 ? '#24221f' : 'transparent',
+                    }}
+                  >
+                    <td style={{ padding: '4px 2px', color: '#cfd5dd' }}>{m.moveNo}</td>
+                    <td style={{ padding: '4px 2px', color: '#f7f7f7' }}>{m.san}</td>
+                    <td style={{ padding: '4px 2px', color: '#aeb6c2' }}>{m.best || ''}</td>
+                    <td style={{ padding: '4px 2px', color: '#d5dce4' }}>{evalLabel(m)}</td>
+                    <td style={{ padding: '4px 2px', color: tagColor(tag), fontWeight: 600 }}>{tag}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="app-shell">
@@ -1034,7 +1157,7 @@ export default function App() {
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: `1fr ${panelWidth}px`,
+          gridTemplateColumns: `${movesPanelWidth}px 1fr ${panelWidth}px`,
           gap: 12,
           padding: 12,
           height: '100vh',
@@ -1042,6 +1165,14 @@ export default function App() {
           minHeight: 0,
         }}
       >
+        <MovePane
+          list={moveEvals}
+          bookMask={bookMask}
+          bookDepth={bookDepth}
+          onJump={rebuildTo}
+          currentPly={ply}
+        />
+
         <BoardPane
           // core state
           fen={fen}
@@ -1102,6 +1233,7 @@ export default function App() {
           blackAcc={review?.blackAcc ?? null}
           avgCplW={review?.avgCplW ?? null}
           avgCplB={review?.avgCplB ?? null}
+          quality={review?.quality ?? null}
           ply={ply}
           bookUci={bookUci}
           analyzing={analyzing}
@@ -1126,6 +1258,7 @@ export default function App() {
           onJumpToPly={jumpToPly}
           onGenerateNotes={onGenerateNotes}
           coachBusy={coachBusy}
+          showMoves={false}
         />
       </div>
     </div>

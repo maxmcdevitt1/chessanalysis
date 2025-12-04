@@ -277,20 +277,25 @@ async function createEngine({ bin, threads, hash } = {}) {
       send('stop');
       send('isready'); await waitLine((l) => l === 'readyok').catch(() => {});
 
-      const MIN_ELO = 600;
+      const MIN_ELO = 400;
       const MAX_ELO = 2500;
       const clamped = Math.max(MIN_ELO, Math.min(MAX_ELO, Math.floor(currentElo)));
+      const lowElo = clamped <= 900;
+      const midElo = clamped <= 1400;
 
       send('setoption name MultiPV value 1');
       send('setoption name UCI_LimitStrength value true');
       send(`setoption name UCI_Elo value ${clamped}`);
-      send('setoption name Skill Level value 20');
+      const skill = lowElo ? 1 : (midElo ? 5 : 20);
+      send(`setoption name Skill Level value ${skill}`);
       send('setoption name Contempt value 0');
       try { send('setoption name Analysis Contempt value Both'); } catch {}
       try { send('setoption name Ponder value false'); } catch {}
 
-      send(`setoption name Threads value ${baseThreads}`);
-      send(`setoption name Hash value ${baseHashMb}`);
+      const threadsForElo = lowElo ? 1 : (midElo ? Math.max(1, Math.min(baseThreads, 2)) : baseThreads);
+      const hashForElo = lowElo ? Math.min(baseHashMb, 256) : (midElo ? Math.min(baseHashMb, 512) : baseHashMb);
+      send(`setoption name Threads value ${threadsForElo}`);
+      send(`setoption name Hash value ${hashForElo}`);
 
       send('isready'); await waitLine((l) => l === 'readyok').catch(() => {});
       limitOn = true;
@@ -342,7 +347,7 @@ async function createEngine({ bin, threads, hash } = {}) {
 
   /* -------------------------- search operations -------------------------- */
 
-  async function analyzeFen({ fen, movetimeMs = 400, multiPv = 1, useBook = true, bookMaxFullMoves = 14, forceDepthFloor = false }) {
+  async function analyzeFen({ fen, movetimeMs = 400, multiPv = 1, useBook = true, bookMaxFullMoves = 16, forceDepthFloor = false }) {
     return runSearch({
       fen,
       movetimeMs,
@@ -372,25 +377,67 @@ async function createEngine({ bin, threads, hash } = {}) {
       allowBook = true,
       collectScore = false,
       forceDepthFloor = false,
-      bookMaxFullMoves = 14,
+      bookMaxFullMoves = 16,
+      bookSample = false,
+      verifyBookMs = 300,
     } = opts || {};
 
-    if (allowBook) {
-      const ext = typeof probeBookMoveExternal === 'function'
-        ? probeBookMoveExternal(fen, { maxFullMoves: bookMaxFullMoves })
-        : null;
-      if (ext && ext.uci) {
-        console.log('[book] hit', ext.uci, 'fen=', fen);
-        return { bestMove: ext.uci, infos: [], book: true, bookMoves: [ext] };
-      }
-      const bookMoves = probeBookMoveLocal(openingBook, fen);
-      if (bookMoves?.length) {
-        console.log('[book] hit', bookMoves[0].uci, 'fen=', fen);
-        return { bestMove: bookMoves[0].uci, infos: [], book: true, bookMoves };
-      }
-    }
-
     return enqueue(async () => {
+      if (allowBook) {
+        const ext = typeof probeBookMoveExternal === 'function'
+          ? probeBookMoveExternal(fen, { maxFullMoves: bookMaxFullMoves })
+          : null;
+        const localMoves = probeBookMoveLocal(openingBook, fen) || [];
+        const candidates = [];
+        if (ext?.uci) candidates.push({ uci: ext.uci, weight: ext.weight || 1 });
+        for (const m of localMoves) candidates.push({ uci: m.uci, weight: m.weight || 1 });
+
+        const pickWeighted = (arr) => {
+          const sum = arr.reduce((s, m) => s + (Number(m.weight) || 1), 0);
+          const r = Math.random() * Math.max(sum, 1);
+          let acc = 0;
+          for (const m of arr) {
+            acc += Number(m.weight) || 1;
+            if (r <= acc) return m;
+          }
+          return arr[0];
+        };
+
+        const hit = candidates.length
+          ? (bookSample && candidates.length > 1 ? pickWeighted(candidates) : candidates[0])
+          : null;
+
+        if (hit && hit.uci) {
+          console.log('[book] hit', hit.uci, 'fen=', fen);
+          if (verifyBookMs > 0) {
+            // Run a quick verification search to get a score while keeping the book move.
+            const infos = [];
+            let lastScore = null;
+            const off = on((l) => {
+              if (l.startsWith('info ')) {
+                const parsed = parseInfoLine(l);
+                if (parsed) infos.push(parsed);
+                if (collectScore) {
+                  const s = quickScoreFromInfo(l);
+                  if (s) lastScore = s;
+                }
+              }
+            });
+
+            send('stop');
+            send('isready'); await waitLine((l) => l === 'readyok').catch(() => {});
+            send(`setoption name MultiPV value ${multiPv}`);
+            send(`position fen ${fen}`);
+            send(`go movetime ${Math.max(80, verifyBookMs)}`);
+
+            const bestLine = await waitLine((l) => l.startsWith('bestmove'), Math.max(4000, verifyBookMs + 2000));
+            off();
+            return { bestMove: hit.uci, infos, score: lastScore, book: true, bookMoves: candidates };
+          }
+          return { bestMove: hit.uci, infos: [], book: true, bookMoves: candidates };
+        }
+      }
+
       const infos = [];
       let lastScore = null;
       const off = on((l) => {
@@ -455,7 +502,7 @@ async function createEngine({ bin, threads, hash } = {}) {
       allowBook: true,
       collectScore: true,
       forceDepthFloor: false,
-      bookMaxFullMoves: 14,
+      bookMaxFullMoves: 16,
     });
     return { bestMove: res?.bestMove || null, score: res?.score || null };
   }
@@ -503,7 +550,8 @@ async function createEngine({ bin, threads, hash } = {}) {
       allowBook: true,
       collectScore: false,
       forceDepthFloor: false, // play mode: honor movetime, avoid depth floor timeouts
-      bookMaxFullMoves: 14,
+      bookMaxFullMoves: 16,
+      bookSample: currentElo <= 1100, // low Elo: sample weighted book move for variety
     });
   }
 
