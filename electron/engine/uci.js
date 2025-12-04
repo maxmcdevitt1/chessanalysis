@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const os = require('os');
+const { probeBookMove: probeBookMoveExternal, bookSize } = require('./book');
 
 /* --------------------- process & small utilities --------------------- */
 
@@ -43,6 +44,148 @@ function pickHashMb(requested) {
   const raw = Number.isFinite(env) ? env : requested;
   // Keep in the sane 1–4 GB window unless the caller overrides via env/arg.
   return clamp(Math.round(raw || 1024), 1024, 4096);
+}
+
+function applyDefaultStrength(send) {
+  try { send('setoption name UCI_LimitStrength value false'); } catch {}
+  try { send('setoption name Skill Level value 20'); } catch {}
+  try { send('setoption name Contempt value 0'); } catch {}
+  try { send('setoption name MultiPV value 1'); } catch {}
+  try { send('setoption name Hash value 1024'); } catch {}
+  try {
+    const cores = Math.max(4, os.cpus()?.length || 4);
+    send(`setoption name Threads value ${cores}`);
+  } catch {}
+}
+
+/* --------------------------- opening book helpers --------------------------- */
+
+const ROOT_DIR = path.join(__dirname, '..', '..');
+const BOOK_MAX_PLY = 24; // only trust early-game book guidance
+const EARLY_PLY_DEPTH_FLOOR = 20;
+const EARLY_DEPTH_TIMEOUT_MS = 6000;
+
+function plyFromFen(fen) {
+  try {
+    const parts = String(fen || '').trim().split(/\s+/);
+    const moveNum = Number(parts[5]) || 1;
+    const stm = (parts[1] || 'w').startsWith('b') ? 'b' : 'w';
+    return (moveNum - 1) * 2 + (stm === 'b' ? 1 : 0);
+  } catch {
+    return 0;
+  }
+}
+
+function normFenKey(fen) {
+  const parts = String(fen || '').trim().split(/\s+/);
+  return parts.slice(0, 4).join(' ');
+}
+
+function pgnToSanTokens(pgn) {
+  if (!pgn) return [];
+  let s = String(pgn);
+  s = s
+    .replace(/\[.*?\]\s*/g, ' ')                 // headers
+    .replace(/\{[^}]*\}/g, ' ')                  // {comments}
+    .replace(/\([^)]*\)/g, ' ')                  // (variations)
+    .replace(/\$\d+/g, ' ')                      // NAGs
+    .replace(/\b1-0\b|\b0-1\b|\b1\/2-1\/2\b|\*/g, ' ')
+    .replace(/\d+\.(\.\.)?/g, ' ')
+    .replace(/\d+…/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return s ? s.split(' ').filter(Boolean) : [];
+}
+
+function toUciLine(row, ChessCtor) {
+  // uci array
+  if (Array.isArray(row?.uci) && row.uci.length) {
+    return row.uci.map(String).filter(m => /^[a-h][1-8][a-h][1-8][nbrq]?$/i.test(m));
+  }
+  // uci space-separated
+  if (typeof row?.uci === 'string' && row.uci.trim()) {
+    return row.uci.split(/\s+/).filter(m => /^[a-h][1-8][a-h][1-8][nbrq]?$/i.test(m));
+  }
+
+  // san[] / moves[] / pgn
+  let san = [];
+  if (Array.isArray(row?.san) && row.san.length) san = row.san;
+  else if (Array.isArray(row?.moves) && row.moves.length) san = row.moves;
+  else if (typeof row?.pgn === 'string' && row.pgn.trim()) san = pgnToSanTokens(row.pgn);
+  if (!san.length) return [];
+
+  const ch = new ChessCtor();
+  const uci = [];
+  for (const tokRaw of san) {
+    const tok = String(tokRaw || '').replace(/[+#?!]+/g, '');
+    const m = ch.move(tok, { sloppy: true });
+    if (!m) break;
+    uci.push(m.from + m.to + (m.promotion ? m.promotion : ''));
+  }
+  return uci;
+}
+
+function loadOpeningBook() {
+  try {
+    // chess.js is bundled as a devDependency; bail gracefully if missing in dev envs.
+    const { Chess } = require('chess.js');
+    const candidates = [
+      path.join(ROOT_DIR, 'data', 'opening-book.json'),
+      path.join(ROOT_DIR, 'webui', 'public', 'opening-book.json'),
+      path.join(ROOT_DIR, 'webui', 'public', 'eco.json'),
+      path.join(ROOT_DIR, 'webui', 'public', 'eco1.json'),
+    ];
+    let rows = [];
+    for (const p of candidates) {
+      if (!fs.existsSync(p)) continue;
+      try {
+        const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+        if (Array.isArray(parsed) && parsed.length) rows = rows.concat(parsed);
+      } catch {
+        // ignore malformed sources
+      }
+    }
+    if (!rows.length) {
+      console.warn('[book] no opening sources found; skipping book probe');
+      return null;
+    }
+
+    const tmp = new Map(); // fenKey -> Map<uci, weight>
+    for (const r of rows) {
+      const line = toUciLine(r, Chess);
+      if (!line.length) continue;
+      const ch = new Chess();
+      for (let i = 0; i < line.length && i < BOOK_MAX_PLY; i++) {
+        const fenKey = normFenKey(ch.fen());
+        const move = line[i];
+        tmp.set(fenKey, tmp.get(fenKey) || new Map());
+        const bucket = tmp.get(fenKey);
+        bucket.set(move, (bucket.get(move) || 0) + 1);
+        const mv = { from: move.slice(0, 2), to: move.slice(2, 4), promotion: move.slice(4) || undefined };
+        if (!ch.move(mv)) break;
+      }
+    }
+
+    const book = new Map();
+    for (const [fenKey, moves] of tmp.entries()) {
+      const arr = Array.from(moves.entries()).map(([uci, weight]) => ({ uci, weight }));
+      arr.sort((a, b) => b.weight - a.weight);
+      book.set(fenKey, arr);
+    }
+    console.log('[book] loaded entries:', book.size);
+    return book;
+  } catch (e) {
+    console.warn('[book] disabled (chess.js missing?)', e?.message || e);
+    return null;
+  }
+}
+
+function probeBookMoveLocal(book, fen) {
+  if (!book) return null;
+  const key = normFenKey(fen);
+  const moves = book.get(key);
+  if (!moves || !moves.length) return null;
+  return moves;
 }
 
 /* ---------------------- engine lifecycle & API ----------------------- */
@@ -88,10 +231,12 @@ async function createEngine({ bin, threads, hash } = {}) {
   }
 
   const enqueue = makeQueue();
+  const openingBook = loadOpeningBook();
 
   // --- UCI init ---
   send('uci');
   await waitLine((l) => l === 'uciok', 10000);
+  applyDefaultStrength(send);
   const threadCount = pickThreads(threads);
   const hashMb = pickHashMb(hash);
   const baseThreads = threadCount;
@@ -110,17 +255,20 @@ async function createEngine({ bin, threads, hash } = {}) {
   async function getCapabilities() {
     // naive probe; Stockfish 16 supports these options
     return {
-      engineId: 'Stockfish 16',
+      engineId: 'Stockfish 16 (analysis)',
       hasLimitStrength: true,
       hasElo: true,
-      hasSkillLevel: true,
+      hasSkillLevel: false,
+      threads: baseThreads,
+      hashMb: baseHashMb,
+      bookEntries: (typeof bookSize === 'function' ? bookSize() : (openingBook?.size || 0)),
     };
   }
 
   /* --------------------- strength & time management --------------------- */
 
   let currentElo = 2000;
-  let limitOn = false;
+  let limitOn = true;
 
   async function applyStrength(elo = 1500) {
     return enqueue(async () => {
@@ -129,9 +277,13 @@ async function createEngine({ bin, threads, hash } = {}) {
       send('stop');
       send('isready'); await waitLine((l) => l === 'readyok').catch(() => {});
 
+      const MIN_ELO = 600;
+      const MAX_ELO = 2500;
+      const clamped = Math.max(MIN_ELO, Math.min(MAX_ELO, Math.floor(currentElo)));
+
       send('setoption name MultiPV value 1');
-      send('setoption name UCI_LimitStrength value false');
-      // Keep Elo slider as a UI hint only; engine stays at full strength.
+      send('setoption name UCI_LimitStrength value true');
+      send(`setoption name UCI_Elo value ${clamped}`);
       send('setoption name Skill Level value 20');
       send('setoption name Contempt value 0');
       try { send('setoption name Analysis Contempt value Both'); } catch {}
@@ -141,21 +293,21 @@ async function createEngine({ bin, threads, hash } = {}) {
       send(`setoption name Hash value ${baseHashMb}`);
 
       send('isready'); await waitLine((l) => l === 'readyok').catch(() => {});
-      limitOn = false;
-      return { ok: true, eloApplied: currentElo, limitStrength: false };
+      limitOn = true;
+      return { ok: true, eloApplied: clamped, limitStrength: true };
     });
   }
 
   function movetimeForElo(elo) {
     const e = Math.max(800, Math.min(2500, Math.floor(Number(elo) || 1500)));
     const points = [
-      [800, 300],
-      [1200, 450],
-      [1600, 800],
-      [2000, 1500],
-      [2200, 2200],
-      [2400, 3200],
-      [2500, 3800],
+      [800, 200],
+      [1200, 350],
+      [1600, 650],
+      [2000, 1100],
+      [2200, 1500],
+      [2400, 2000],
+      [2500, 2400],
     ];
     for (let i = 0; i < points.length - 1; i++) {
       const [e0, t0] = points[i];
@@ -190,30 +342,15 @@ async function createEngine({ bin, threads, hash } = {}) {
 
   /* -------------------------- search operations -------------------------- */
 
-  async function analyzeFen({ fen, movetimeMs = 400, multiPv = 1 }) {
-    return enqueue(async () => {
-      const infos = [];
-      const off = on((l) => {
-        if (l.startsWith('info ')) {
-          const parsed = parseInfoLine(l);
-          if (parsed) infos.push(parsed);
-        }
-      });
-
-      // ensure fresh search
-      send('stop');
-      send('isready'); await waitLine((l) => l === 'readyok').catch(() => {});
-
-      send(`setoption name MultiPV value ${multiPv}`);
-      send(`position fen ${fen}`);
-      send(`go movetime ${movetimeMs}`);
-
-      const best = await waitLine((l) => l.startsWith('bestmove'));
-      off();
-
-      const m = /bestmove\s+(\S+)/.exec(best);
-      const bestMove = m ? m[1] : null;
-      return { bestMove, infos };
+  async function analyzeFen({ fen, movetimeMs = 400, multiPv = 1, useBook = true, bookMaxFullMoves = 14, forceDepthFloor = false }) {
+    return runSearch({
+      fen,
+      movetimeMs,
+      multiPv,
+      allowBook: useBook,
+      collectScore: false,
+      forceDepthFloor,
+      bookMaxFullMoves,
     });
   }
 
@@ -227,26 +364,100 @@ async function createEngine({ bin, threads, hash } = {}) {
     return null;
   }
 
-  async function analyzeOnce({ fen, movetimeMs = 120 }) {
-    const off = on(() => {});
-    send('stop');
-    send('isready'); await waitLine((l) => l === 'readyok').catch(() => {});
+  async function runSearch(opts) {
+    const {
+      fen,
+      movetimeMs = 400,
+      multiPv = 1,
+      allowBook = true,
+      collectScore = false,
+      forceDepthFloor = false,
+      bookMaxFullMoves = 14,
+    } = opts || {};
 
-    send('position fen ' + fen);
-    send('go movetime ' + Math.max(60, movetimeMs));
+    if (allowBook) {
+      const ext = typeof probeBookMoveExternal === 'function'
+        ? probeBookMoveExternal(fen, { maxFullMoves: bookMaxFullMoves })
+        : null;
+      if (ext && ext.uci) {
+        console.log('[book] hit', ext.uci, 'fen=', fen);
+        return { bestMove: ext.uci, infos: [], book: true, bookMoves: [ext] };
+      }
+      const bookMoves = probeBookMoveLocal(openingBook, fen);
+      if (bookMoves?.length) {
+        console.log('[book] hit', bookMoves[0].uci, 'fen=', fen);
+        return { bestMove: bookMoves[0].uci, infos: [], book: true, bookMoves };
+      }
+    }
 
-    let lastScore = null;
-    const off2 = on((l) => {
-      const s = quickScoreFromInfo(l);
-      if (s) lastScore = s;
+    return enqueue(async () => {
+      const infos = [];
+      let lastScore = null;
+      const off = on((l) => {
+        if (l.startsWith('info ')) {
+          const parsed = parseInfoLine(l);
+          if (parsed) infos.push(parsed);
+          if (collectScore) {
+            const s = quickScoreFromInfo(l);
+            if (s) lastScore = s;
+          }
+        }
+      });
+
+      // ensure fresh search
+      send('stop');
+      send('isready'); await waitLine((l) => l === 'readyok').catch(() => {});
+
+      send(`setoption name MultiPV value ${multiPv}`);
+      send(`position fen ${fen}`);
+
+      const openingPly = plyFromFen(fen);
+      const forceDeep = forceDepthFloor && openingPly <= BOOK_MAX_PLY;
+      const safeMs = Math.max(80, Number(movetimeMs) || 0);
+      let depthTimer = null;
+
+      let waitBudget = forceDeep
+        ? Math.max(Math.max(safeMs, EARLY_DEPTH_TIMEOUT_MS) + 7000, 25000)
+        : Math.max(6000, safeMs + 4000);
+
+      if (forceDeep) {
+        const capMs = Math.max(safeMs, EARLY_DEPTH_TIMEOUT_MS);
+        send(`go depth ${EARLY_PLY_DEPTH_FLOOR}`);
+        depthTimer = setTimeout(() => {
+          try { send('stop'); } catch {}
+        }, capMs);
+      } else {
+        // play mode: honor movetime and stop shortly after as a guard
+        send(`go movetime ${safeMs}`);
+        depthTimer = setTimeout(() => {
+          try { send('stop'); } catch {}
+        }, safeMs + 2000);
+      }
+
+      let best = null;
+      try {
+        best = await waitLine((l) => l.startsWith('bestmove'), waitBudget);
+        const m = /bestmove\s+(\S+)/.exec(best);
+        const bestMove = m ? m[1] : null;
+        return { bestMove, infos, score: lastScore, book: false };
+      } finally {
+        if (depthTimer) { try { clearTimeout(depthTimer); } catch {} }
+        off();
+      }
     });
+  }
 
-    const best = await waitLine((l) => l.startsWith('bestmove'));
-    off(); off2();
-
-    const m = /bestmove\s+(\S+)/.exec(best);
-    const bestMove = m ? m[1] : null;
-    return { bestMove, score: lastScore };
+  async function analyzeOnce({ fen, movetimeMs = 120 }) {
+    const res = await runSearch({
+      fen,
+      movetimeMs: Math.max(60, movetimeMs),
+      multiPv: 1,
+      allowBook: true,
+      collectScore: true,
+      forceDepthFloor: false,
+      bookMaxFullMoves: 14,
+    });
+    return { bestMove: res?.bestMove || null, score: res?.score || null };
   }
 
   async function reviewPositionsFast(fens, opts = {}) {
@@ -285,7 +496,15 @@ async function createEngine({ bin, threads, hash } = {}) {
   async function moveWeak({ fen, movetimeMs, multiPv = 1 }) {
     // Scale move time by currentElo to avoid too-weak play
     const ms = Math.max(Number(movetimeMs || 0), movetimeForElo(currentElo));
-    return analyzeFen({ fen, movetimeMs: ms, multiPv });
+    return runSearch({
+      fen,
+      movetimeMs: ms,
+      multiPv,
+      allowBook: true,
+      collectScore: false,
+      forceDepthFloor: false, // play mode: honor movetime, avoid depth floor timeouts
+      bookMaxFullMoves: 14,
+    });
   }
 
   async function reviewPgn(args /* { pgn, ... } */) {

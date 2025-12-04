@@ -271,7 +271,11 @@ async function generateNotes(inputs) {
 
 /* ---------------------------------- IPC ----------------------------------- */
 
+let __coachIpcReady = false;
 function registerCoachIpc() {
+  // Dev/HMR safe: clear any existing handlers first
+  try { ipcMain.removeHandler('coach:generate'); } catch {}
+  try { ipcMain.removeHandler('coach:ping'); } catch {}
   ipcMain.handle('coach:generate', async (_e, payload) => {
     try {
       const inputs = payload?.inputs || {};
@@ -288,6 +292,8 @@ function registerCoachIpc() {
       return { offline: true, reason: 'exception' };
     }
   });
+  ipcMain.handle('coach:ping', async () => ({ ok: true, ping: 'coach' }));
+  __coachIpcReady = true;
 }
 
 module.exports = {

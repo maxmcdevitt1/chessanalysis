@@ -177,10 +177,6 @@ function registerIpc() {
 
   ipcMain.handle('engine:ping', async () => 'pong');
 
-  ipcMain.handle('coach:generate', async (_evt, payload) => {
-    return await coach.generateNotes(payload);
-  });
-
   // Save file (PGN / JSON)
   ipcMain.handle('export:save', async (_evt, payload) => {
     try {
@@ -200,27 +196,6 @@ function registerIpc() {
     } catch (e) {
       console.error('[ipc] export:save error', e);
       return { ok: false, error: String(e?.message || e) };
-    }
-  });
-
-  ipcMain.handle('coach:ping', async () => {
-    const prompt = [
-      'N=2',
-      '#1W e4 [Book] Δcp=0.10; best=e4; idx=0',
-      '#1B c5 [Book] Δcp=-0.05; best=c5; idx=1'
-    ].join('\n');
-    try {
-      const out = await coach.generateNotes({
-        model: process.env.COACH_MODEL,
-        moments: [
-          { ply: 1, color: 'w', san: 'e4', deltaCp: 10, bestUci: 'e2e4', idx: 0 },
-          { ply: 1, color: 'b', san: 'c5', deltaCp: -5, bestUci: 'c7c5', idx: 1 }
-        ],
-        summary: { opening: 'Sicilian Defense' }
-      });
-      return out;
-    } catch (e) {
-      return { notes: [], offline: true, error: String(e?.message || e) };
     }
   });
 }
@@ -295,6 +270,7 @@ if (process.platform === 'win32') {
 app.whenReady().then(() => {
   createWindow();
   try {
+    // Idempotent in dev: coachBridge removes handlers before re-adding
     require('./coachBridge').registerCoachIpc();
     console.log('[coach] IPC registered');
   } catch (e) {

@@ -102,16 +102,34 @@ function lastCp(infos?: any[]): number | null {
 
 /* ----- Strength/Elo mapping (consistent across eval + replies) ----- */
 
-// Map UI strength 1..20 → display Elo 400..1800
+// Map UI strength 1..20 → display Elo 400..2500
 function uiEloFromStrength(n: number) {
   const s = Math.max(1, Math.min(20, n));
   return Math.round(400 + (s - 1) * ((2500- 400) / 19));
 }
 
-// Reply movetime: 400→200ms ... 1800→1600ms (linear, clear and predictable)
+// Reply movetime: fast and shallow at low Elo, modest at high Elo.
+// Piecewise-linear table for clarity.
 function eloToMovetimeMs(elo: number) {
-  const e = Math.max(400, Math.min(2500, elo));
-  return Math.round(200 + (e - 400) * 1.0);
+  const pts = [
+    [400, 120],
+    [800, 220],
+    [1200, 360],
+    [1600, 520],
+    [2000, 720],
+    [2300, 900],
+    [2500, 1100],
+  ];
+  const e = Math.max(pts[0][0], Math.min(pts[pts.length - 1][0], Math.floor(elo || 400)));
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [e0, t0] = pts[i];
+    const [e1, t1] = pts[i + 1];
+    if (e >= e0 && e <= e1) {
+      const k = (e - e0) / (e1 - e0);
+      return Math.round(t0 + k * (t1 - t0));
+    }
+  }
+  return pts[pts.length - 1][1];
 }
 
 // Live-eval movetime: ~30% of reply time, clamped to 120..600ms
@@ -138,10 +156,13 @@ function moverSideOf(m: any): 'W'|'B' {
   return 'W';
 }
 function afterToMoverPOV(m: any): number | null {
-  // Prefer cpAfterWhite when present; else negate cpAfter after White moves
-  if (typeof m?.cpAfterWhite === 'number') return (moverSideOf(m) === 'W') ? -m.cpAfter : m.cpAfterWhite;
-  const cp = typeof m?.cpAfter === 'number' ? m.cpAfter : null;
-  return cp == null ? null : -cp;
+  // Prefer cpAfterWhite (always White POV after the move); convert to mover POV.
+  if (typeof m?.cpAfterWhite === 'number') {
+    const whitePov = m.cpAfterWhite;
+    return moverSideOf(m) === 'W' ? whitePov : -whitePov;
+  }
+  const cp = typeof m?.cpAfter === 'number' ? m.cpAfter : null; // opponent POV (side to move)
+  return cp == null ? null : -cp; // flip to mover POV
 }
 
 /* ----------------------------- metrics helpers --------------------------- */
@@ -195,7 +216,7 @@ function pickNotBestLegalUci(fen: string, best: string | undefined): string | nu
 const ENGINE_READY: Promise<void> = (async () => {
   try {
     await getCapabilities();
-    const savedElo = Number(localStorage.getItem('engineElo') || '1000');
+    const savedElo = Number(localStorage.getItem('engineElo') || '2000');
     if (Number.isFinite(savedElo)) await setStrength(savedElo);
   } catch {}
 })();
@@ -300,7 +321,7 @@ export default function App() {
 
   // options
   const [engineStrength, setEngineStrength] = useState(() =>
-    getNumber(ENGINE_STRENGTH_KEY, 10)
+    getNumber(ENGINE_STRENGTH_KEY, 12)
   );
   const [showEvalGraph, setShowEvalGraph] = useState(() => {
     const v = getNumber(SHOW_EVAL_GRAPH_KEY, 1);
@@ -312,13 +333,14 @@ export default function App() {
   const [evalPending, setEvalPending] = useState(false);
   const [suspendEval, setSuspendEval] = useState(false);
   const evalReqId = useRef(0);
+  const openingComputedRef = useRef<string | null>(null);
 
   /* Persist the strength number (1..20) */
   useEffect(() => {
     setNumber(ENGINE_STRENGTH_KEY, engineStrength);
   }, [engineStrength]);
 
-  /* Debounced push of UCI_Elo to engine (and store display Elo) */
+  /* Debounced push of the UI Elo knob (engine runs full strength; Elo only scales time) */
   useEffect(() => {
     const elo = uiEloFromStrength(engineStrength);
     localStorage.setItem('engineElo', String(elo));
@@ -341,6 +363,10 @@ export default function App() {
   // This prevents early, shallow labels and lets us optionally extend the prefix.
   useEffect(() => {
     if (!moveEvals || moveEvals.length === 0) return; // not analyzed yet
+    // Avoid looping: only recompute when moveEvals content changes (length + last index)
+    const key = `${moveEvals.length}:${moveEvals[moveEvals.length - 1]?.index ?? 'x'}`;
+    if (openingComputedRef.current === key) return;
+    openingComputedRef.current = key;
     let cancelled = false;
 
     // Small-Δcp extender: continues opening while theory-like (quiet) moves persist.
@@ -406,7 +432,7 @@ export default function App() {
 
     return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [moveEvals]); // <-- ONLY after analysis
+  }, [moveEvals, analyzing]); // <-- ONLY after analysis
 
   const openingText = openingInfo
     ? (typeof openingInfo === 'string'
@@ -752,14 +778,15 @@ export default function App() {
 
       const res = await withTimeout(
         moveWeakSafe(fenNow, { movetimeMs, multiPv: 2 }),
-        Math.max(6000, movetimeMs + 5000)
+        Math.max(8000, movetimeMs + 5000)
       );
 
       let uci = (res?.bestMove as string | undefined) || '';
 
-      // Low-Elo randomness/blunder
+      // Low-Elo randomness/blunder (disabled for Elo ≥ 1800 and during analysis)
       const p = blunderProbability(elo);
-      if (Math.random() < p) {
+      const allowMistakes = (elo < 1800) && !analyzing;
+      if (allowMistakes && Math.random() < p) {
         const coin = Math.random();
         const alt = coin < 0.5
           ? pickRandomLegalUci(fenNow)
@@ -1070,7 +1097,6 @@ export default function App() {
           gameEloWhite={review?.estEloWhite ?? null}
           gameEloBlack={review?.estEloBlack ?? null}
           movesUci={movesUci}
-          moveEvals={moveEvals}
           openingInfo={openingText || null}
           whiteAcc={review?.whiteAcc ?? null}
           blackAcc={review?.blackAcc ?? null}
