@@ -9,7 +9,7 @@ import { TagBadge } from './TagBadges';
 
 type MoveEvalLite = {
   uci?: string;
-  tag?: 'Genius'|'Best'|'Good'|'Mistake'|'Blunder'|'Book'|null;
+  tag?: 'Genius'|'Best'|'Good'|'Inaccuracy'|'Mistake'|'Blunder'|'Book'|'Review'|null;
   san?: string;
 };
 
@@ -110,7 +110,6 @@ function PlayerBadge({
   const isWhite = side === 'white';
   const bg = isWhite ? '#f5f5f5' : '#2f2f33';
   const fg = isWhite ? '#222' : '#f3f4f6';
-  const sub = isWhite ? '#4a4a4a' : '#d1d5db';
   const border = isWhite ? '#e0e0e0' : '#3f3f45';
   const pillBg = isWhite ? '#e8e8e8' : '#3a3a40';
   return (
@@ -136,7 +135,6 @@ function PlayerBadge({
           Acc: {acc != null ? `${Math.round(acc)}%` : '—'}
         </span>
       </div>
-      <div style={{ fontSize: 12, color: sub }}>{isWhite ? 'Plays as White' : 'Plays as Black'}</div>
     </div>
   );
 }

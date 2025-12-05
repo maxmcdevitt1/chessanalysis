@@ -6,7 +6,7 @@ export type Moment = {
   moveNo: number;       // 1..n
   side: 'White' | 'Black';
   san: string;
-  tag: 'Book' | 'Best' | 'Good' | 'Mistake' | 'Blunder';
+  tag: 'Book' | 'Best' | 'Good' | 'Inaccuracy' | 'Mistake' | 'Blunder' | 'Review';
   cpBefore?: number | null; // white POV (UI)
   cpAfter?: number | null;  // white POV (UI)
   dWin?: number | null;     // optional ΔWin% if you calculate it

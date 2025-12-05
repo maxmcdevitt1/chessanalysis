@@ -5,7 +5,7 @@ export type MoveEval = {
   side: 'White' | 'Black' | 'W' | 'B';
   san: string;
   uci?: string;
-  tag?: 'Book' | 'Best' | 'Good' | 'Inaccuracy' | 'Mistake' | 'Blunder' | 'Brilliant';
+  tag?: 'Book' | 'Best' | 'Good' | 'Inaccuracy' | 'Mistake' | 'Blunder' | 'Brilliant' | 'Review';
   cpBefore?: number;
   cpAfter?: number;
   comment?: string;

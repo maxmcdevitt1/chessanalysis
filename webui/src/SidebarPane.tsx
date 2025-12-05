@@ -39,12 +39,12 @@ type MoveEval = {
   uci: string;
   best?: string | null;
   cpBefore?: number | null; // white POV
-  cpAfter?: number | null;  // white POV
+  cpAfter?: number | null;  // side-to-move POV after the move (opponent POV)
   bestCpBefore?: number | null; // mover POV
   mateAfter?: number | null;
   cpl?: number | null;
-  tag?: 'Genius' | 'Best' | 'Good' | 'Mistake' | 'Blunder' | 'Book';
-  symbol?: '!!' | '!' | '!? ' | '?' | '??' | '';
+  tag?: 'Genius' | 'Best' | 'Good' | 'Inaccuracy' | 'Mistake' | 'Blunder' | 'Book' | 'Review';
+  symbol?: '!!' | '!' | '?!' | '!? ' | '?' | '??' | '';
   fenBefore: string;
   fenAfter: string;
 };

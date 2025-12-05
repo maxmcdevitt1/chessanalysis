@@ -2,8 +2,9 @@ export type Tag =
   | 'Book'
   | 'Best'
   | 'Good'
+  | 'Inaccuracy'
   | 'Mistake'
   | 'Blunder'
-  | 'Inaccuracy'
   | 'Brilliant'
-  | 'Genius';
+  | 'Genius'
+  | 'Review';

@@ -32,13 +32,13 @@ export type MoveEval = {
   uci: string;
   best?: string | null;
   cpBefore?: number | null; // white POV
-  cpAfter?: number | null;  // white POV
+  cpAfter?: number | null;  // side-to-move POV after this move (opponent POV)
   cpAfterWhite?: number | null;
   bestCpBefore?: number | null; // mover POV
   mateAfter?: number | null;
   cpl?: number | null;
-  tag?: 'Genius' | 'Best' | 'Good' | 'Mistake' | 'Blunder' | 'Book';
-  symbol?: '!!' | '!' | '!? ' | '?' | '??' | '';
+  tag?: 'Genius' | 'Best' | 'Good' | 'Inaccuracy' | 'Mistake' | 'Blunder' | 'Book' | 'Review';
+  symbol?: '!!' | '!' | '?!' | '!? ' | '?' | '??' | '';
   isBook?: boolean;
   fenBefore: string;
   fenAfter: string;
@@ -93,25 +93,69 @@ function mateToCp(mateVal: number | null | undefined): number | null {
   return sign * (10000 - Math.min(99, Math.abs(mateVal)) * 100);
 }
 
-// last CP or mate-converted CP from infos (supports {cp} or {mate})
-function lastScoreCp(infos?: any[]): number | null {
-  if (!infos?.length) return null;
-  for (let i = infos.length - 1; i >= 0; i--) {
-    const it = infos[i];
-    if (typeof it?.cp === 'number') return it.cp;
-    if (typeof it?.mate === 'number') {
-      const v = mateToCp(it.mate);
-      if (v != null) return v;
-    }
-    if (it?.type === 'cp' && Number.isFinite(Number(it.score))) {
-      return Number(it.score);
-    }
-    if (it?.type === 'mate' && typeof it.score === 'number') {
-      const v = mateToCp(it.score);
-      if (v != null) return v;
-    }
-  }
+type EvalScore = { cp?: number; mate?: number } | null;
+
+function extractScore(raw: any): EvalScore {
+  if (!raw) return null;
+  if (typeof raw.cp === 'number') return { cp: raw.cp };
+  if (typeof raw.mate === 'number') return { mate: raw.mate };
+  if (raw.type === 'cp' && Number.isFinite(raw.value)) return { cp: Number(raw.value) };
+  if (raw.type === 'mate' && Number.isFinite(raw.value)) return { mate: Number(raw.value) };
+  if (raw.type === 'cp' && Number.isFinite(raw.score)) return { cp: Number(raw.score) };
+  if (raw.type === 'mate' && Number.isFinite(raw.score)) return { mate: Number(raw.score) };
   return null;
+}
+
+// Prefer MultiPV #1; fall back to the latest seen score.
+function bestScoreFromInfos(infos?: any[]): EvalScore {
+  if (!infos?.length) return null;
+  let best: EvalScore = null;
+  let fallback: EvalScore = null;
+  for (const it of infos) {
+    const v = extractScore(it);
+    if (!v) continue;
+    const mpv = Number(it?.multipv || it?.multiPv);
+    if (!mpv || mpv === 1) best = v;
+    fallback = v;
+  }
+  return best ?? fallback ?? null;
+}
+
+function scoreToWhiteCp(score: EvalScore): number | null {
+  if (!score) return null;
+  if (typeof score.cp === 'number') return score.cp;
+  if (typeof score.mate === 'number') return score.mate > 0 ? 10000 : -10000;
+  return null;
+}
+
+function evalForMover(score: EvalScore, sideToMove: 'w' | 'b'): number {
+  if (!score) return NaN;
+  if (typeof score.cp === 'number') {
+    return sideToMove === 'w' ? score.cp : -score.cp;
+  }
+  if (typeof score.mate === 'number') {
+    const cp = score.mate > 0 ? 10000 : -10000;
+    return sideToMove === 'w' ? cp : -cp;
+  }
+  return NaN;
+}
+
+function cplForHalfMove(
+  bestBefore: EvalScore,
+  afterEval: EvalScore,
+  sideToMove: 'w' | 'b',
+  nextSide: 'w' | 'b'
+): number | null {
+  const beforeForMover = evalForMover(bestBefore, sideToMove);
+  const afterForMover = evalForMover(afterEval, nextSide);
+  if (!Number.isFinite(beforeForMover) || !Number.isFinite(afterForMover)) return null;
+  return Math.max(0, Math.round(beforeForMover - afterForMover));
+}
+
+// last CP or mate-converted CP from infos (prefers MultiPV #1).
+function lastScoreCp(infos?: any[]): number | null {
+  const sc = bestScoreFromInfos(infos);
+  return scoreToWhiteCp(sc);
 }
 
 function cpAfterWhiteValue(m: any): number | null {
@@ -234,23 +278,25 @@ function afterToMoverPOV(m: any): number | null {
 function accFromAcplConservative(acpl: number | null): number | null {
   if (acpl == null || !isFinite(acpl)) return null;
   const x = Math.max(0, acpl);
-  // Harsher curve: small ACPL still costs points; higher ACPL falls faster.
-  const raw = 103 - 6.0 * Math.sqrt(x + 6);
-  return Math.max(0, Math.min(99, Math.round(raw)));
+  // Softer curve: ACPL≈10 → ~97–99, 50 → ~82, 100 → ~66.
+  const A = 180;
+  const B = 1.3;
+  const val = 100 / (1 + Math.pow(x / A, B));
+  return Math.max(1, Math.min(99, Math.round(val * 10) / 10));
 }
 
 type Buckets = { inacc: number; mistakes: number; blunders: number };
 function estimateEloConservative(acpl: number | null, buckets: Buckets): number | null {
   if (acpl == null || !isFinite(acpl)) return null;
   const { inacc, mistakes, blunders } = buckets;
-  // Use the same steep ACPL→accuracy curve to anchor Elo, then penalize mistakes hard.
+  // Use the softened ACPL→accuracy curve to anchor Elo, then penalize mistakes (lighter) to match the gentler accuracy scale.
   const acc = accFromAcplConservative(acpl) ?? 0; // 0..99
   const accScale = Math.max(0, Math.min(1, acc / 100));
-  // Base Elo from accuracy (curved so it drops fast): 400..2300
-  let base = 380 + Math.pow(accScale, 1.9) * 2100;
-  // Extra penalty for raw ACPL and bucketed mistakes/blunders (harsher)
-  base -= (acpl * 11) + (inacc * 40) + (mistakes * 90) + (blunders * 170);
-  return Math.max(400, Math.min(2300, Math.round(base)));
+  // Base Elo from accuracy (gentler curve): 400..2500
+  let base = 500 + Math.pow(accScale, 1.3) * 2200;
+  // Extra penalty for raw ACPL and bucketed mistakes/blunders (lighter still)
+  base -= (acpl * 3.5) + (inacc * 16) + (mistakes * 38) + (blunders * 70);
+  return Math.max(400, Math.min(2500, Math.round(base)));
 }
 
 // Bucket losses (centipawns) into rough severity levels independent of tags.
@@ -376,10 +422,10 @@ function sameBaseMove(a?: string | null, b?: string | null): boolean {
 }
 
 function severityTag(cpl: number | null): MoveEval['tag'] {
-  if (cpl == null) return 'Good';
-  if (cpl <= 5) return 'Good';
-  if (cpl <= 30) return 'Inaccuracy';
-  if (cpl <= 70) return 'Mistake';
+  if (cpl == null) return 'Review';
+  if (cpl <= 15) return 'Good';
+  if (cpl <= 50) return 'Inaccuracy';
+  if (cpl <= 120) return 'Mistake';
   return 'Blunder';
 }
 
@@ -391,6 +437,7 @@ function symbolFor(tag: MoveEval['tag']): MoveEval['symbol'] {
     case 'Good': return '';
     case 'Mistake': return '?';
     case 'Blunder': return '??';
+    case 'Review': return '?!';
     case 'Book':
     default: return '';
   }
@@ -658,7 +705,7 @@ export default function App() {
           );
         } catch { before = null; }
 
-        const bestCp = lastScoreCp(before?.infos);
+        const bestScore = bestScoreFromInfos(before?.infos);
         const bestMoveUci = (before?.bestMove || null) as string | null;
 
         // apply played move
@@ -677,30 +724,25 @@ export default function App() {
           );
         } catch { after = null; }
 
-        const afterCpRaw = lastScoreCp(after?.infos);
+        const afterScore = bestScoreFromInfos(after?.infos);
 
         const mover = i % 2 === 0 ? 'w' : 'b';
-        const bestForMover = bestCp == null ? null : bestCp;
-        const afterForMover = afterCpRaw == null ? null : -afterCpRaw;
+        const nextSide = mover === 'w' ? 'b' : 'w';
+        const bestForMover = evalForMover(bestScore, mover);
+        const afterForNext = evalForMover(afterScore, nextSide);
 
-        const cpBeforeWhite =
-          bestForMover == null ? null : (mover === 'w' ? bestForMover : -bestForMover);
+        const cpBeforeWhite = scoreToWhiteCp(bestScore);
 
-        // Store cpAfter as opponent-POV (raw engine output after the move)
-        let cpAfterStored = afterCpRaw;
+        // Store cpAfter as side-to-move POV (opponent after the move); keep White POV separately.
+        let cpAfterStored = Number.isFinite(afterForNext) ? afterForNext : null;
+        let cpAfterWhite = scoreToWhiteCp(afterScore);
 
-        let cpAfterWhite =
-          afterForMover == null ? null : (mover === 'w' ? afterForMover : -afterForMover);
-
-        let cpl: number | null = null;
+        let cpl: number | null = deliveredMate
+          ? 0
+          : cplForHalfMove(bestScore, afterScore, mover, nextSide);
         if (deliveredMate) {
-          // Checkmate delivered: zero loss and maximal eval swing
-          cpl = 0;
-          cpAfterStored = mover === 'w' ? -9900 : 9900; // opponent POV after move
-          cpAfterWhite = mover === 'w' ? 9900 : -9900;
-        } else if (bestForMover != null && afterForMover != null) {
-          cpl = bestForMover - afterForMover;
-          if (cpl < 0) cpl = 0;
+          cpAfterStored = mover === 'w' ? -10000 : 10000;
+          cpAfterWhite = mover === 'w' ? 10000 : -10000;
         }
 
         const seqBefore = movesUci.slice(0, i);
@@ -710,10 +752,12 @@ export default function App() {
         // If the move dumps significant CPL, don't treat it as book even if it appears in the tree.
         if (isBookMove && cpl != null && cpl >= 50) isBookMove = false;
 
+        const bestCpBeforeMover = Number.isFinite(bestForMover) ? bestForMover : null;
+
         let tag: MoveEval['tag'];
         if (deliveredMate) tag = 'Best';
         else if (isBookMove) tag = 'Book';
-        else if (playedIsBest && cpl === 0 && bestForMover != null) tag = 'Best';
+        else if (playedIsBest && cpl === 0 && bestCpBeforeMover != null) tag = 'Best';
         else tag = severityTag(cpl);
 
         const symbol = symbolFor(tag);
@@ -729,7 +773,8 @@ export default function App() {
           cpAfter: cpAfterStored,
           // optional convenience for charts expecting White POV:
           cpAfterWhite: cpAfterWhite,
-          bestCpBefore: bestForMover,
+          bestCpBefore: bestCpBeforeMover,
+          mateAfter: (afterScore?.mate != null && Number.isFinite(afterScore.mate)) ? afterScore.mate : null,
           cpl,
           tag,
           symbol,
@@ -801,13 +846,6 @@ export default function App() {
       const resArr = await withTimeout(reviewFast(fens, { elo }), timeoutMs);
       const results = Array.isArray(resArr) ? resArr : [];
 
-      const scoreToNum = (sc: any): number | null => {
-        if (!sc) return null;
-        if (sc.type === 'cp' && Number.isFinite(sc.value)) return sc.value as number;
-        if (sc.type === 'mate' && Number.isFinite(sc.value)) return sc.value >= 0 ? 9900 : -9900;
-        return null;
-      };
-
       const out: MoveEval[] = [];
       for (let i = 0; i < seq.length; i++) {
         const info = seq[i];
@@ -815,25 +853,27 @@ export default function App() {
         const next = results[i + 1];
         const bestMoveUci = cur?.bestMove || null;
 
-        const bestForMover = scoreToNum(cur?.score);   // POV mover
-        const afterOpponent = scoreToNum(next?.score); // POV opponent (side-to-move after move)
+        const mover = info.side === 'White' ? 'w' : 'b';
+        const nextSide = mover === 'w' ? 'b' : 'w';
+        const bestScore = extractScore(cur?.score);
+        const afterScore = extractScore(next?.score);
 
-        const cpBeforeWhite = bestForMover == null ? null : (info.side === 'White' ? bestForMover : -bestForMover);
-        // Store cpAfter as returned (opponent POV); keep white-POV version for display if needed
-        const cpAfterStored = afterOpponent;
-        // Convert opponent-POV score after the move to White POV for charts/accuracy.
-        const cpAfterWhite = afterOpponent == null
-          ? null
-          : (info.side === 'White' ? -afterOpponent : afterOpponent);
+        const bestForMover = evalForMover(bestScore, mover);
+        const afterForNext = evalForMover(afterScore, nextSide);
 
-        let cpl: number | null = null;
+        const cpBeforeWhite = scoreToWhiteCp(bestScore);
+        let cpAfterStored = Number.isFinite(afterForNext) ? afterForNext : null;
+        let cpAfterWhite = scoreToWhiteCp(afterScore);
+
+        let cpl: number | null = info.isMate
+          ? 0
+          : cplForHalfMove(bestScore, afterScore, mover, nextSide);
         if (info.isMate) {
-          cpl = 0;
-        } else if (bestForMover != null && afterOpponent != null) {
-          const afterMover = -afterOpponent; // flip opponent POV to mover POV
-          cpl = Math.max(0, bestForMover - afterMover);
+          cpAfterStored = mover === 'w' ? -10000 : 10000;
+          cpAfterWhite = mover === 'w' ? 10000 : -10000;
         }
 
+        const bestCpBeforeMover = Number.isFinite(bestForMover) ? bestForMover : null;
         const seqBefore = movesUci.slice(0, i);
         const candidatesUci = normalizeBookToUci(nextBookMoves(seqBefore), i, movesUci);
         let isBookMove = Array.isArray(candidatesUci) && candidatesUci.includes(info.uci);
@@ -844,10 +884,17 @@ export default function App() {
         let tag: MoveEval['tag'];
         if (info.isMate) tag = 'Best';
         else if (isBookMove) tag = 'Book';
-        else if (playedIsBest && cpl === 0 && bestForMover != null) tag = 'Best';
+        else if (playedIsBest && cpl === 0 && bestCpBeforeMover != null) tag = 'Best';
         else tag = severityTag(cpl);
 
         const symbol = symbolFor(tag);
+
+        const afterScoreObj =
+          (afterScore?.mate != null && Number.isFinite(afterScore.mate))
+            ? ({ type: 'mate', value: afterScore.mate } as const)
+            : (Number.isFinite(afterForNext)
+                ? ({ type: 'cp', value: afterForNext } as const)
+                : null);
 
         out.push({
           index: i,
@@ -860,9 +907,9 @@ export default function App() {
           cpAfter: cpAfterStored,
           // optional white-POV value for display components
           cpAfterWhite,
-          afterScore: afterOpponent == null ? null : (next?.score ? { type: next.score.type, value: next.score.value } : null),
-          bestCpBefore: bestForMover,
-          mateAfter: (next?.score?.type === 'mate') ? next.score.value : null,
+          afterScore: afterScoreObj,
+          bestCpBefore: bestCpBeforeMover,
+          mateAfter: (afterScore?.mate != null && Number.isFinite(afterScore.mate)) ? afterScore.mate : null,
           cpl,
           tag,
           symbol,
@@ -1015,6 +1062,9 @@ export default function App() {
     let bB: Buckets = { inacc: 0, mistakes: 0, blunders: 0 };
     for (const m of moveEvals) {
       const side: 'W' | 'B' = moverSideOf(m);
+      const tag = (m as any)?.tag;
+      const hasAfterMate = typeof (m as any).mateAfter === 'number';
+      if (hasAfterMate) continue; // include book plies; still skip terminal mates for ACPL
 
       const beforeCpMover = (() => {
         if (typeof (m as any).cpBefore === 'number') {
@@ -1050,8 +1100,6 @@ export default function App() {
       if (typeof beforeCpMover === 'number' && typeof afterCpMover === 'number') {
         (m as any).deltaCpMover = afterCpMover - beforeCpMover;
       }
-      const hasAfterMate = typeof (m as any).mateAfter === 'number';
-
       const best = (typeof bestBeforeCp === 'number') ? ({ type: 'cp', value: bestBeforeCp } as const) : null;
       const after = hasAfterMate
         ? ({ type: 'mate', value: (m as any).mateAfter } as const)
@@ -1074,12 +1122,14 @@ export default function App() {
         loss = Math.max(0, (m as any).cpl);
       }
       if (loss == null) continue;
-      // Make the loss harsher, especially for blunders.
-      const bump = loss >= 120 ? 18 : 6;
-      const lossHarsh = Math.max(0, loss * 1.18 + bump);
-      halfMoves.push({ side, best, after, loss: lossHarsh });
+      // Use raw loss to keep Avg CPL closer to the underlying centipawn swing.
+      const lossAdj = Math.max(0, loss);
+      // ACPL averaging uses (lightly capped) raw CPL; keep raw for tagging/buckets.
+      const lossForAvg = Math.min(lossAdj, 400);
+      const weight = tag === 'Book' ? 0.5 : 1;
+      halfMoves.push({ side, best, after, loss: lossAdj, lossAvg: lossForAvg, weight });
 
-      const b = bucketFromLossCp(lossHarsh);
+      const b = bucketFromLossCp(lossAdj);
       if (side === 'W') {
         if (b === 'inacc') bW.inacc++;
         else if (b === 'mistake') bW.mistakes++;
@@ -1093,8 +1143,11 @@ export default function App() {
 
     let sumW = 0, nW = 0, sumB = 0, nB = 0;
     for (const h of halfMoves) {
-      if (!Number.isFinite(h.loss)) continue;
-      if (h.side === 'W') { sumW += h.loss; nW++; } else { sumB += h.loss; nB++; }
+      const l = Number.isFinite((h as any).lossAvg) ? Number((h as any).lossAvg) :
+                Number.isFinite((h as any).loss) ? Number((h as any).loss) : null;
+      if (l == null) continue;
+      const w = Number.isFinite((h as any).weight) ? Number((h as any).weight) : 1;
+      if (h.side === 'W') { sumW += l * w; nW += w; } else { sumB += l * w; nB += w; }
     }
     const avgCplW = nW ? sumW / nW : null;
     const avgCplB = nB ? sumB / nB : null;
