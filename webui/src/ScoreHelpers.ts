@@ -92,13 +92,13 @@ export function avgCplPerSide(halfMoves: Array<{
 
 // -------------------------- Accuracy & ELO (steeper) --------------------------
 
-/** Accuracy from avg CPL with a smoother curve (ACPL≈10 → ~98, ACPL≈50 → ~86, ACPL≈100 → ~70). */
+/** Accuracy from avg CPL with a smoother curve (ACPL≈10 → ~98–99, 50 → ~91, 100 → ~81). */
 export function accuracyFromAvgCpl(acpl: number | null): number | null {
   if (acpl == null || !isFinite(acpl)) return null;
   const x = Math.max(0, acpl);
-  const A = 170;
-  const B = 1.5;
-  const val = 100 / (1 + Math.pow(x / A, B));
+  const A = 400;
+  const k = 1.1;
+  const val = 100 / (1 + Math.pow(x / A, k));
   return Math.round(Math.max(1, Math.min(99, val)) * 10) / 10;
 }
 
@@ -144,12 +144,12 @@ export function estimateEloFromGame(args: {
   const base = interpPiecewise(ACPL_ELO_TABLE, Math.max(0, avgCpl));
   const m = Math.max(0, (args.mistakes ?? 0));
   const b = Math.max(0, (args.blunders ?? 0));
-  const shortFactor = 1 + 0.6 * clamp((40 - hm) / 40, 0, 1);
-  const penalty = shortFactor * (3 * m + 8 * b);
+  const shortFactor = 1 + 0.4 * clamp((40 - hm) / 40, 0, 1);
+  const penalty = shortFactor * (1.6 * m + 4.5 * b);
   let est = base - penalty;
   const shrink = clamp(1 - hm / 60, 0, 0.5);
   est = (1 - shrink) * est + shrink * 1500;
-  return Math.round(clamp(est, 400, 2550));
+  return Math.round(clamp(est, 400, 2600));
 }
 
 /**
