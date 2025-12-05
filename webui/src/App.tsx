@@ -284,12 +284,14 @@ function afterToMoverPOV(m: any): number | null {
 
 /* ----------------------------- metrics helpers --------------------------- */
 // Conservative accuracy model similar to common ACPL→accuracy approximations.
+// Keep roughly in sync with ScoreHelpers.accuracyFromAvgCpl.
 function accFromAcplConservative(acpl: number | null): number | null {
   if (acpl == null || !isFinite(acpl)) return null;
   const x = Math.max(0, acpl);
-  // Softer logistic on raw ACPL: ACPL≈10→~98–99, 50→~91, 100→~81.
-  const A = 400;
-  const k = 1.1;
+  // Slightly stricter curve to avoid inflated accuracy:
+  // ACPL≈10→~97, 50→~87, 100→~78.
+  const A = 380;
+  const k = 0.95;
   const val = 100 / (1 + Math.pow(x / A, k));
   return Math.max(1, Math.min(99, Math.round(val * 10) / 10));
 }
@@ -298,7 +300,7 @@ type Buckets = { inacc: number; mistakes: number; blunders: number };
 function estimateEloConservative(acpl: number | null, buckets: Buckets): number | null {
   if (acpl == null || !isFinite(acpl)) return null;
   const { inacc, mistakes, blunders } = buckets;
-  // Use the softened ACPL→accuracy curve to anchor Elo, then penalize mistakes (lighter) to match the gentler accuracy scale.
+  // Use the tuned ACPL→accuracy curve to anchor Elo, then penalize mistakes (lighter) to match the gentler accuracy scale.
   const acc = accFromAcplConservative(acpl) ?? 0; // 0..99
   const accScale = Math.max(0, Math.min(1, acc / 100));
   // Base Elo from accuracy (gentler curve): 400..2550
@@ -310,10 +312,10 @@ function estimateEloConservative(acpl: number | null, buckets: Buckets): number 
 
 // Bucket losses (centipawns) into rough severity levels independent of tags.
 function bucketFromLossCp(lossCp: number): 'ok'|'inacc'|'mistake'|'blunder' {
-  if (lossCp <= 20) return 'ok';        // ≤0.20 pawns
-  if (lossCp <= 60) return 'inacc';     // 0.21–0.60
-  if (lossCp <= 120) return 'mistake';  // 0.61–1.20
-  return 'blunder';                      // >1.20
+  if (lossCp <= 15) return 'ok';        // ≤0.15 pawns
+  if (lossCp <= 45) return 'inacc';     // 0.16–0.45
+  if (lossCp <= 90) return 'mistake';   // 0.46–0.90
+  return 'blunder';                     // >0.90
 }
 
 function pickRandomLegalUci(fen: string): string | null {
@@ -432,9 +434,9 @@ function sameBaseMove(a?: string | null, b?: string | null): boolean {
 
 function severityTag(cpl: number | null): MoveEval['tag'] {
   if (cpl == null) return 'Review';
-  if (cpl <= 20) return 'Good';
-  if (cpl <= 60) return 'Inaccuracy';
-  if (cpl <= 120) return 'Mistake';
+  if (cpl <= 15) return 'Good';
+  if (cpl <= 45) return 'Inaccuracy';
+  if (cpl <= 90) return 'Mistake';
   return 'Blunder';
 }
 
@@ -1087,6 +1089,8 @@ export default function App() {
     // Track buckets for conservative Elo estimate.
     let bW: Buckets = { inacc: 0, mistakes: 0, blunders: 0 };
     let bB: Buckets = { inacc: 0, mistakes: 0, blunders: 0 };
+    let maxLossW = 0;
+    let maxLossB = 0;
     for (const m of moveEvals) {
       const side: 'W' | 'B' = moverSideOf(m);
       const tag = (m as any)?.tag;
@@ -1151,8 +1155,8 @@ export default function App() {
       if (loss == null) continue;
       // Use raw loss to keep Avg CPL closer to the underlying centipawn swing.
       const lossAdj = Math.max(0, loss);
-      // ACPL averaging uses (lightly capped) raw CPL; keep raw for tagging/buckets.
-      const lossForAvg = Math.min(lossAdj, 60);
+      // ACPL averaging uses a slightly capped CPL; keep raw for tagging/buckets.
+      const lossForAvg = Math.min(lossAdj, 90);
       const weight = tag === 'Book' ? 0.25 : 1;
       halfMoves.push({ side, best, after, loss: lossAdj, lossAvg: lossForAvg, weight });
 
@@ -1161,10 +1165,12 @@ export default function App() {
         if (b === 'inacc') bW.inacc++;
         else if (b === 'mistake') bW.mistakes++;
         else if (b === 'blunder') bW.blunders++;
+        maxLossW = Math.max(maxLossW, lossAdj);
       } else {
         if (b === 'inacc') bB.inacc++;
         else if (b === 'mistake') bB.mistakes++;
         else if (b === 'blunder') bB.blunders++;
+        maxLossB = Math.max(maxLossB, lossAdj);
       }
     }
 
@@ -1178,13 +1184,17 @@ export default function App() {
     }
     const avgCplW = nW ? sumW / nW : null;
     const avgCplB = nB ? sumB / nB : null;
-    const whiteAcc = accFromAcplConservative(avgCplW);
-    const blackAcc = accFromAcplConservative(avgCplB);
+    // Blend in the worst slip to punish big mistakes more heavily.
+    const maxCap = 200;
+    const avgCplWAdj = avgCplW == null ? null : (avgCplW * 0.65 + Math.min(maxLossW, maxCap) * 0.35);
+    const avgCplBAdj = avgCplB == null ? null : (avgCplB * 0.65 + Math.min(maxLossB, maxCap) * 0.35);
+    const whiteAcc = accFromAcplConservative(avgCplWAdj);
+    const blackAcc = accFromAcplConservative(avgCplBAdj);
     const quality = tallyMoveQuality(halfMoves);
     // Conservative Elo estimates
-    const estEloWhite = estimateEloConservative(avgCplW, bW);
-    const estEloBlack = estimateEloConservative(avgCplB, bB);
-    return { avgCplW, avgCplB, whiteAcc, blackAcc, quality, estEloWhite, estEloBlack };
+    const estEloWhite = estimateEloConservative(avgCplWAdj, bW);
+    const estEloBlack = estimateEloConservative(avgCplBAdj, bB);
+    return { avgCplW: avgCplWAdj, avgCplB: avgCplBAdj, whiteAcc, blackAcc, quality, estEloWhite, estEloBlack };
   }, [moveEvals]);
 
   const onGenerateNotes = useCallback(async () => {

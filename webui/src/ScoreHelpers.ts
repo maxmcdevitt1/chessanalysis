@@ -35,9 +35,9 @@ export function cpLossForMoveSideAware(
 /** Classify a single move by its centipawn loss (mover POV). */
 export function classifyLossCp(lossCp: number): 'best'|'good'|'inaccuracy'|'mistake'|'blunder' {
   const l = Math.abs(lossCp | 0);
-  if (l >= 150) return 'blunder';
-  if (l >= 60)  return 'mistake';
-  if (l >= 30)  return 'inaccuracy';
+  if (l >= 90)  return 'blunder';
+  if (l >= 45)  return 'mistake';
+  if (l >= 15)  return 'inaccuracy';
   if (l <= 5)   return 'best';
   return 'good';
 }
@@ -92,21 +92,22 @@ export function avgCplPerSide(halfMoves: Array<{
 
 // -------------------------- Accuracy & ELO (steeper) --------------------------
 
-/** Accuracy from avg CPL with a smoother curve (ACPL≈10 → ~98–99, 50 → ~91, 100 → ~81). */
+/** Accuracy from avg CPL with a stricter curve (ACPL≈10 → ~97, 50 → ~87, 100 → ~78). */
 export function accuracyFromAvgCpl(acpl: number | null): number | null {
   if (acpl == null || !isFinite(acpl)) return null;
   const x = Math.max(0, acpl);
-  const A = 400;
-  const k = 1.1;
+  // Keep in sync with App.accFromAcplConservative.
+  const A = 380;
+  const k = 0.95;
   const val = 100 / (1 + Math.pow(x / A, k));
-  return Math.round(Math.max(1, Math.min(99, val)) * 10) / 10;
+  return Math.max(1, Math.min(99, Math.round(val * 10) / 10));
 }
 
 /** Optional: CPL → qualitative tag aligned with stricter accuracy. */
 export function tagFromLoss(lossCp: number): 'Best' | 'Good' | 'Mistake' | 'Blunder' {
-  if (lossCp <= 15) return 'Best';
-  if (lossCp <= 50) return 'Good';       // slightly tighter than before
-  if (lossCp <= 120) return 'Mistake';
+  if (lossCp <= 10) return 'Best';
+  if (lossCp <= 45) return 'Good';       // harsher: flag middling drops sooner
+  if (lossCp <= 90) return 'Mistake';
   return 'Blunder';
 }
 
@@ -173,8 +174,8 @@ export function summarizeGame(moves: Array<{
       if (loss == null) continue;
       n++; sum += loss;
       const l = Math.round(loss);
-      if (l >= 150) blunders++;
-      else if (l >= 60) mistakes++;
+      if (l >= 90) blunders++;
+      else if (l >= 45) mistakes++;
     }
     const avgCpl = n ? sum / n : null;
     const estElo = estimateEloFromGame({ avgCpl, halfMoves: n, mistakes, blunders });
