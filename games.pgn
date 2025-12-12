@@ -1,0 +1,24 @@
+[Event "Self-Play Elo Test"]
+[Site "Local"]
+[Date "2025.12.10"]
+[Round "1"]
+[White "Band:900"]
+[Black "Band:900"]
+[Result "1/2-1/2"]
+[SetUp "1"]
+[FEN "rnbqkbnr/pppppppp/8/8/3P4/8/PPP1PPPP/RNBQKBNR b KQkq - 0 1"]
+
+1. ... Nf6 2. c4 e6 3. g3 Bb4+ 4. Bd2 Be7 5. Nf3 d5 6. Bg2 Nbd7 7. Qc2 c6 8. O-O O-O 9. Rd1 b6 10. Bf4 Ba6 11. Ne5 Rc8 12. Qa4 Nb8 13. Nxc6 Rxc6 14. Bxb8 Rxc4 15. Qxa6 Qxb8 16. Nc3 Rfc8 17. e3 R4c6 18. Nb5 Rc2 19. Rab1 Ng4 20. Rf1 Bg5 21. Nxa7 Rf8 22. Rbe1 Qc7 23. Bf3 Nxh2 24. Kxh2 Ra8 25. Qa4 Be7 26. e4 Rxa7 27. Qe8+ Bf8 28. exd5 exd5 29. Bxd5 Rxb2 30. Rc1 Qd6 31. Rc8 h5 32. Rd8 Re2 33. Qxe2 Qxd8 34. Qxh5 Rd7 35. Bb3 Qf6 36. Kg2 Qxd4 37. Qf5 Re7 38. Rc1 Qe4+ 39. Qxe4 Rxe4 40. Rc6 Re2 41. Rc8 Re5 42. f4 Rf5 43. Kf3 g5 44. Rc6 gxf4 45. g4 Rb5 46. Rc7 Bh6 47. Bc4 Re5 48. Rxf7 Kh8 49. Kg2 Re3 50. Kf2 Bg5 51. Be2 Ra3 52. Rf5 Bh4+ 53. Kf1 Bg3 54. Rf7 Bh4 55. Bc4 Rf3+ 56. Ke2 Re3+ 57. Kd2 b5 58. Bxb5 Ra3 59. Bc4 f3 60. Kc2 Be1 61. Kb2 Ra4 62. Rxf3 Rb4+ 63. Ka3 Rxc4 64. Kb2 Rc8 65. a4 Kg7 66. Re3 Ba5 67. Kb3 Kf6 68. Rf3+ Ke6 69. g5 Rc5 70. Rg3 Kf7 71. Rg2 Rc3+ 72. Kb2 Rc8 73. Rc2 Rb8+ 74. Ka3 Bb4+ 75. Kb3 Bc5+ 76. Kc3 Kg7 77. Kd3 Ra8 78. Rc4 Bd6 79. Kd2 Kg6 80. Ke3 Ra5 81. Rg4 Bf4+ 82. Kd4 Rxa4+ 83. Kd3 Ra2 84. Rg1 Be3 85. Rd1 Kh5 86. Kc3 Kxg5 87. Rd8 Re2 88. Rf8 Bc5 89. Rf1 Re4 90. Rd1 Kf5 91. Rd8 Bb4+ 92. Kd3 Re1 93. Kc4 Be7 94. Rd5+ Ke4 95. Rd4+ Ke5 96. Rd5+ Ke4 97. Rd4+ Ke5 98. Rd5+ Ke4 1/2-1/2
+
+[Event "Self-Play Elo Test"]
+[Site "Local"]
+[Date "2025.12.10"]
+[Round "2"]
+[White "Band:900"]
+[Black "Band:900"]
+[Result "1/2-1/2"]
+[SetUp "1"]
+[FEN "r1bqkbnr/pppp1ppp/2n5/4p3/3P4/5NP1/PPP1PPBP/RNBQK2R b KQkq - 2 4"]
+
+4. ... e4 5. Nfd2 d5 6. c4 f5 7. cxd5 Nce7 8. f3 Nxd5 9. Qb3 e3 10. Nc4 f4 11. Nc3 Nge7 12. Ne5 c6 13. gxf4 Be6 14. Nxd5 Nxd5 15. O-O Bd6 16. Bxe3 O-O 17. Qd3 Nxf4 18. Bxf4 Rxf4 19. Rad1 Qh4 20. e3 Rf6 21. f4 Rh6 22. Nf3 Qh5 23. h3 Bf5 24. e4 Bxh3 25. Ng5 Bxg2 26. Qb3+ Kf8 27. Kxg2 Qg4+ 28. Qg3 Qe2+ 29. Qf2 Qg4+ 30. Qg3 Qe2+ 31. Qf2 Qg4+ 32. Qg3 1/2-1/2
+
