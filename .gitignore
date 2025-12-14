@@ -120,3 +120,4 @@ packages/*/build/
 packages/*/.turbo/
 packages/*/.cache/
 
+node_modules

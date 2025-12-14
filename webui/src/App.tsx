@@ -28,7 +28,7 @@ import { usePgnImport } from './hooks/usePgnImport';
 import { useOpeningBookMoves } from './hooks/useOpeningBookMoves';
 import { usePlayerControls } from './hooks/usePlayerControls';
 import { useReviewAndCoach } from './hooks/useReviewAndCoach';
-import { panicEngine } from './bridge';
+import { useCoachNoteForPly, useCoachMomentNoteForPly } from './hooks/useCoachNoteForPly';
 
 const MOVES_PANEL_WIDTH = 320;
 
@@ -74,7 +74,15 @@ export default function App() {
 
   const [orientation, setOrientation] = useState<'white' | 'black'>('white');
   const [moveEvals, setMoveEvals] = useState<MoveEval[]>([]);
-  const { notes: coachNotes, isRunning: coachBusy, error: coachError, run: runCoach } = useCoach();
+  const {
+    sections: coachSections,
+    moveNotes: coachMoveNotes,
+    momentNotes: coachMomentNotes,
+    isRunning: coachBusy,
+    error: coachError,
+    run: runCoach,
+    reset: resetCoach,
+  } = useCoach();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [engineError, setEngineError] = useState<string | null>(null);
   const { toasts, push: pushToast, dismiss: dismissToast } = useToasts();
@@ -162,37 +170,23 @@ export default function App() {
     setSuspendEval,
   });
 
-  const {
-    onUserDrop,
-    onApplyBookMove,
-    onOfferDraw,
-    onBeginMatch,
-    onResign,
-    onNewGame,
-  } = usePlayerControls({
-    applyMoveWithTrim,
-    markUserMoved,
-    clockRunning,
-    startClock,
-    pauseClock,
-    setGameOver: setGameOverState,
-    setAutoReply,
-    gameOver,
-    beginMatch,
-    resignMatch,
-    resetGameState,
-    resetClocksToStart,
-    markMatchNotStarted,
-    setMoveEvals,
-    onUserMove: stopAnalyze,
-  });
-
   const { loadPgnText, loadPgnFile } = usePgnImport({
     loadMoves,
     resetEvaluations,
     markMatchNotStarted,
     notify: pushToast,
   });
+  const loadPgnTextWithReset = useCallback((text: string) => {
+    const ok = loadPgnText(text);
+    if (ok) resetCoach();
+  }, [loadPgnText, resetCoach]);
+  const loadPgnFileWithReset = useCallback((file: File) => {
+    loadPgnFile(file)
+      .then((ok) => {
+        if (ok) resetCoach();
+      })
+      .catch(() => {});
+  }, [loadPgnFile, resetCoach]);
 
   const {
     analysis: liveAnalysis,
@@ -221,6 +215,35 @@ export default function App() {
     notify: pushToast,
     setSuspendEval,
   });
+
+  const {
+    onUserDrop,
+    onApplyBookMove,
+    onOfferDraw,
+    onBeginMatch,
+    onResign,
+    onNewGame: baseOnNewGame,
+  } = usePlayerControls({
+    applyMoveWithTrim,
+    markUserMoved,
+    clockRunning,
+    startClock,
+    pauseClock,
+    setGameOver: setGameOverState,
+    setAutoReply,
+    gameOver,
+    beginMatch,
+    resignMatch,
+    resetGameState,
+    resetClocksToStart,
+    markMatchNotStarted,
+    setMoveEvals,
+    onUserMove: stopAnalyze,
+  });
+  const onNewGame = useCallback(() => {
+    resetCoach();
+    baseOnNewGame();
+  }, [resetCoach, baseOnNewGame]);
   const openingDetection = useOpeningDetection({ engine, movesUci });
   const batchError = batchAnalysis.error;
   const openingError = openingDetection.error;
@@ -266,35 +289,18 @@ export default function App() {
 
   /* ------------------ review (accuracy / avg CPL) ------------------------ */
 
-  const { review, evalSeries, notesForPly, onGenerateNotes } = useReviewAndCoach({
+  const { review, evalSeries, onGenerateNotes } = useReviewAndCoach({
     moveEvals,
     movesUci,
-    ply,
-    coachNotes,
     coachBusy,
     runCoach,
     openingText: openingText || null,
+    gameOver,
+    pgn: game.pgn({ max_width: 0, newline_char: ' ' }),
   });
 
-  const handlePanic = useCallback(async () => {
-    try {
-      stopAnalyze();
-      batchAnalysis.cancel();
-      engine?.cancelAll?.();
-      setSuspendEval(true);
-      await panicEngine();
-      pushToast({ message: 'Engine stopped.', variant: 'warning' });
-    } catch (err: any) {
-      pushToast({
-        message: err?.message ? `Unable to stop engine: ${err.message}` : 'Unable to stop engine.',
-        variant: 'error',
-      });
-    } finally {
-      setSuspendEval(false);
-    }
-  }, [stopAnalyze, batchAnalysis, engine, pushToast, setSuspendEval]);
-
-  // (No textarea-based coach text here anymore; list is rendered via CoachMoveList)
+  const coachMomentNote = useCoachMomentNoteForPly(ply, coachMomentNotes);
+  const coachMoveNote = useCoachNoteForPly(ply, coachMoveNotes);
 
   // best-move arrow
   const bestArrow = useBestArrow(ply, moveEvals);
@@ -378,7 +384,6 @@ export default function App() {
           // visuals
           bestArrow={bestArrow}
           bookMask={bookMask}
-          currentPly={ply}
           lastMove={ply > 0 && movesUci[ply - 1] ? { from: movesUci[ply - 1].slice(0,2), to: movesUci[ply - 1].slice(2,4) } : null}
 
           // player display around board
@@ -391,6 +396,8 @@ export default function App() {
           engineTargetElo={engineTargetElo}
           engineTargetLabel={engineTargetLabel}
           engineTargetRange={engineTargetRange}
+          coachMomentNote={coachMomentNote}
+          coachMoveNote={coachMoveNote}
         />
 
         <SidebarPane
@@ -418,15 +425,14 @@ export default function App() {
           onAnalyze={analyzePgn}
           onAnalyzeFast={analyzePgnFast}
           onStopAnalyze={stopAnalyze}
-          onLoadPgnText={loadPgnText}
-          onLoadPgnFile={loadPgnFile}
+          onLoadPgnText={loadPgnTextWithReset}
+          onLoadPgnFile={loadPgnFileWithReset}
           onApplyBookMove={onApplyBookMove}
           engineBand={engineBand}
           onEngineBandChange={setEngineBand}
-          activeCoachNotes={notesForPly}
-          coachNotes={coachNotes}
-          currentPly={ply}
-          onJumpToPly={jumpToPly}
+          coachSections={coachSections}
+          coachMomentNotes={coachMomentNotes}
+          coachMoveNotes={coachMoveNotes}
           onGenerateNotes={onGenerateNotes}
           coachBusy={coachBusy}
           coachError={coachError}
@@ -435,7 +441,6 @@ export default function App() {
           evalPending={evalPending}
           engineSettings={engineSettingsSlice}
           onSettingsChange={handleSettingsChange}
-          onPanic={handlePanic}
         />
         </div>
       </div>

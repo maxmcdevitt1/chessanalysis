@@ -4,6 +4,8 @@ import { Chessboard } from 'react-chessboard';
 import type { Square } from './chess-compat';
 import EvalSparkline from './EvalSparkline';
 import { TagBadge } from './TagBadges';
+import CoachCard from './components/CoachCard';
+import type { CoachMomentNote, CoachMoveNote } from './types/coach';
 
 /* ----------------------------- Types & Props ------------------------------ */
 
@@ -69,6 +71,9 @@ type BoardPaneProps = {
   clockRunning?: boolean;
   matchStarted?: boolean;
   engineError?: string | null;
+  coachMomentNote?: CoachMomentNote | null;
+  coachMoveNote?: CoachMoveNote | null;
+  coachBoxOffset?: number;
 };
 
 /* --------------------------------- UI Kit -------------------------------- */
@@ -336,6 +341,9 @@ export default function BoardPane(props: BoardPaneProps) {
     clockMs, clockRunning, matchStarted, engineError,
     currentMoveEval, evalSeries, showEvalGraph,
     onOrientationChange, hasAnalysis,
+  coachMomentNote,
+  coachMoveNote,
+  coachBoxOffset,
   } = props;
   const { customSquareStyles, bookMask, currentPly, lastMove } = props;
   const {
@@ -381,12 +389,12 @@ export default function BoardPane(props: BoardPaneProps) {
     return 'Draw';
   }, [gameOver]);
 
-  const clockLabel = (ms?: number) => {
+  const formatClock = (ms?: number | null) => {
     if (ms == null || !isFinite(ms)) return '--:--';
-    const total = Math.max(0, Math.floor(ms / 1000));
-    const m = Math.floor(total / 60);
-    const s = total % 60;
-    return `${m}:${String(s).padStart(2, '0')}`;
+    const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${String(seconds).padStart(2, '0')}`;
   };
 
   /* ---------- Badge: size + position (top-right inside destination square) ---------- */
@@ -488,6 +496,12 @@ export default function BoardPane(props: BoardPaneProps) {
   // Keep badges and main row aligned to the board (eval bar floats to the right).
   const layoutWidth = boardWidth;
   const graphOffset = 0;
+  const coachOverlayWidth = Math.min(280, Math.max(220, Math.floor(boardWidth * 0.23)));
+  const coachOverlayOutsideGap = coachBoxOffset ?? (coachOverlayWidth + 28);
+  const coachOverlayDockInside = boardWidth < 760;
+  const coachOverlayPositionStyle = coachOverlayDockInside
+    ? { right: 12 }
+    : { left: -coachOverlayOutsideGap };
   const keyframes = `
     @keyframes popFade {
       0% { transform: scale(0.9); opacity: 0; }
@@ -503,10 +517,16 @@ export default function BoardPane(props: BoardPaneProps) {
       <style>{keyframes}</style>
       {/* Top row: player badges spaced evenly over the board area */}
       <div style={{ display:'flex', alignItems:'flex-start', width: layoutWidth, margin:'0 auto', gap:12 }}>
-        <div style={{ flex:'1 1 0%', display:'flex', justifyContent:'flex-start', marginLeft: 6 }}>
+        <div style={{ flex:'1 1 0%', display:'flex', justifyContent:'flex-start', marginLeft: 6, alignItems: 'center', gap: 10 }}>
           <PlayerBadge side="white" name={whiteName} acc={whiteAcc} estElo={whiteEstElo} />
+          <span style={{ fontSize: 16, color: '#e2e8f0', fontVariantNumeric: 'tabular-nums' }}>
+            {formatClock(clockMs?.w)}
+          </span>
         </div>
-        <div style={{ flex:'1 1 0%', display:'flex', justifyContent:'flex-end', marginRight: Math.max(0, evalColWidth * 0.45) }}>
+        <div style={{ flex:'1 1 0%', display:'flex', justifyContent:'flex-end', marginRight: Math.max(0, evalColWidth * 0.45), alignItems:'center', gap:12 }}>
+          <span style={{ fontSize: 16, color: '#e2e8f0', fontVariantNumeric: 'tabular-nums' }}>
+            {formatClock(clockMs?.b)}
+          </span>
           <PlayerBadge side="black" name={blackName} acc={blackAcc} estElo={blackEstElo} />
         </div>
       </div>
@@ -536,12 +556,61 @@ export default function BoardPane(props: BoardPaneProps) {
                 top:  badgePos.top,
                 width: badgeSize,
                 height: badgeSize,
-                pointerEvents: 'none',
+                pointerEvents: 'auto',
               }}
             >
               <RenderBadge tag={overlayTag} size={badgeSize} />
             </div>
           )}
+
+          {coachMomentNote ? (
+            <div
+              style={{
+                position: 'absolute',
+                top: Math.max(12, boardWidth * 0.08),
+                ...coachOverlayPositionStyle,
+                width: coachOverlayWidth,
+                maxWidth: 320,
+                pointerEvents: 'auto',
+                zIndex: 5,
+              }}
+            >
+              <CoachCard
+                key={`moment-${coachMomentNote.moveIndex}`}
+                note={coachMomentNote}
+                compact
+                defaultExpanded={false}
+              />
+            </div>
+          ) : coachMoveNote ? (
+            <div
+              style={{
+                position: 'absolute',
+                top: Math.max(12, boardWidth * 0.08),
+                ...coachOverlayPositionStyle,
+                width: coachOverlayWidth,
+                background: 'rgba(15,23,42,0.96)',
+                border: '1px solid rgba(59,130,246,0.4)',
+                borderRadius: 12,
+                padding: '12px 14px',
+                color: '#e2e8f0',
+                fontSize: 15,
+                lineHeight: '22px',
+                boxShadow: '0 12px 28px rgba(0,0,0,0.35)',
+                pointerEvents: 'none',
+                backdropFilter: 'blur(6px)',
+                zIndex: 5,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: 14, marginBottom: 6 }}>
+                <span>
+                  Coach on move {coachMoveNote.moveNo}{coachMoveNote.side === 'B' ? '…' : '.'} {coachMoveNote.san || '?'}
+                </span>
+                {coachMoveNote.tag ? <TagBadge tag={coachMoveNote.tag} size={18} /> : null}
+              </div>
+              <div style={{ whiteSpace: 'normal' }}>{coachMoveNote.text}</div>
+            </div>
+          ) : null}
 
         </div>
 
@@ -575,7 +644,7 @@ export default function BoardPane(props: BoardPaneProps) {
         ) : null}
 
         <div style={{ width: '100%', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
-          <div style={{ padding:'12px 14px', borderRadius: 12, border:'1px solid #1f2a3a', background:'#0c111b', boxShadow:'0 10px 26px rgba(0,0,0,.35)', display:'flex', flexDirection:'column', gap:10 }}>
+          <div style={{ padding:'12px 14px', borderRadius: 12, border:'1px solid #1f2a3a', background:'#0c111b', boxShadow:'0 10px 26px rgba(0,0,0,.35)', display:'flex', flexDirection:'column', gap:10, minHeight: 0 }}>
             <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, flexWrap:'wrap' }}>
               <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
                 <span style={{ ...ui.pill, background:'#0f172a', borderColor:'#203046' }}>
@@ -601,14 +670,6 @@ export default function BoardPane(props: BoardPaneProps) {
               </button>
             </div>
             <div style={{ display:'flex', gap: 10, flexWrap:'wrap' }}>
-              <div style={ui.pill}>
-                <Icon name="kingW" size={18} />
-                White: {clockLabel(clockMs?.w)}
-              </div>
-              <div style={{ ...ui.pill, background:'#0c1322' }}>
-                <Icon name="kingB" size={18} />
-                Black: {clockLabel(clockMs?.b)}
-              </div>
               <div style={{ ...ui.pill, background:'#0d1726', borderStyle:'dashed', borderColor:'#203046', color:'#9fb4d2' }}>
                 <Icon name={clockRunning ? 'play' : 'clock'} size={18} />
                 {clockRunning ? 'Clock running' : (matchStarted ? 'Paused' : 'Not started')}

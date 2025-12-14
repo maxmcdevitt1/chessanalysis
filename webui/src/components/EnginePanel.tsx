@@ -1,5 +1,4 @@
 import React from 'react';
-import { acplBandForElo } from '../ScoreHelpers';
 import { bandById, STRENGTH_BANDS, type StrengthBandId } from '../strengthBands';
 
 export type EnginePanelProps = {
@@ -22,7 +21,6 @@ export default function EnginePanel({
   onBandChange,
 }: EnginePanelProps) {
   const bandMeta = bandById(band);
-  const acplBand = acplBandForElo(bandMeta.centerElo);
   const statusLabel = evalPending ? 'Analyzing…' : 'Live eval (White POV)';
   const evalLabel = formatEval(evalCp);
 
@@ -44,14 +42,6 @@ export default function EnginePanel({
         >
           {evalLabel}
         </div>
-        <div style={{ fontSize: 14, color: '#9ca3af' }}>
-          Target band: <strong>{bandMeta.display || bandMeta.label}</strong> ({bandMeta.range[0]}–{bandMeta.range[1]} Elo)
-        </div>
-        {acplBand && (
-          <div style={{ fontSize: 13, color: '#9ca3af' }}>
-            Typical accuracy band: <strong>{acplBand.label}</strong>
-          </div>
-        )}
       </div>
       <div style={{ marginTop: 4 }}>
         <div style={{ fontWeight: 500, marginBottom: 8 }}>Strength presets</div>

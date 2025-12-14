@@ -29,6 +29,11 @@ const engineApi = {
   panic: () => ipcRenderer.invoke('engine:panic'),
 };
 
+const settingsApi = {
+  get: () => ipcRenderer.invoke('settings:get'),
+  update: (patch) => ipcRenderer.invoke('settings:update', patch),
+};
+
 /* ------------------------------ Coach bridge ----------------------------- */
 
 const coachApi = {
@@ -51,7 +56,3 @@ try {
 } catch (e) {
   console.error('[preload] expose electron.invoke failed:', e);
 }
-const settingsApi = {
-  get: () => ipcRenderer.invoke('settings:get'),
-  update: (patch) => ipcRenderer.invoke('settings:update', patch),
-};

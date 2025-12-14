@@ -9,8 +9,11 @@ files:
   - electron/**
   - webui/dist/**
   - package.json
+
 asar: true
-artifactName: chessanalysis_${version}_${arch}.${ext}
+
+# Single naming scheme for all artifacts
+artifactName: chessanalysis_${version}_${os}_${arch}.${ext}
 
 extraResources:
   - from: electron/bin
@@ -19,8 +22,10 @@ extraResources:
   - from: assets
     to: assets
 
+# ---------- LINUX ----------
 linux:
   target:
+    - AppImage
     - deb
   icon: build/icon.png        # 512x512 PNG; builder generates sizes
   category: Game
@@ -31,6 +36,7 @@ linux:
   synopsis: "Offline chess analysis with Stockfish"
   description: "A desktop app for analyzing chess positions and PGNs locally using the native Stockfish engine. No internet required."
 
+# ---------- WINDOWS ----------
 win:
   icon: build/icon.ico
   target:
@@ -44,13 +50,18 @@ win:
     - from: electron/run-safe.cmd
       to: .
 
-mac:
-  icon: build/icon.icns
-  category: public.app-category.games
-
 nsis:
   oneClick: true
   perMachine: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   deleteAppDataOnUninstall: false
+
+# ---------- MACOS ----------
+mac:
+  icon: build/icon.icns
+  category: public.app-category.games
+  target:
+    - dmg
+    - zip
+

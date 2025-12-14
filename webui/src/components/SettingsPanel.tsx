@@ -4,7 +4,6 @@ import type { Settings } from '../hooks/useSettings';
 type Props = {
   settings: Pick<Settings, 'engineThreads' | 'engineHashMb' | 'liveMultipv' | 'disableGpu'>;
   onChange: (patch: Partial<Settings>) => void;
-  onPanic: () => void;
 };
 
 function Field({
@@ -22,7 +21,7 @@ function Field({
   );
 }
 
-export default function SettingsPanel({ settings, onChange, onPanic }: Props) {
+export default function SettingsPanel({ settings, onChange }: Props) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ fontWeight: 600, fontSize: 18 }}>Performance & Safety</div>
@@ -72,25 +71,6 @@ export default function SettingsPanel({ settings, onChange, onPanic }: Props) {
           Disable GPU acceleration<span style={{ color: '#9ca3af' }}> (requires restart)</span>
         </span>
       </label>
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-        <button
-          style={{
-            padding: '8px 12px',
-            borderRadius: 8,
-            border: '1px solid #92400e',
-            background: '#451a03',
-            color: '#ffedd5',
-            fontWeight: 600,
-            cursor: 'pointer',
-          }}
-          onClick={onPanic}
-        >
-          Panic – Stop Engine
-        </button>
-        <span style={{ fontSize: 13, color: '#d1d5db' }}>
-          Use if the engine feels stuck or your laptop fans spike.
-        </span>
-      </div>
     </div>
   );
 }

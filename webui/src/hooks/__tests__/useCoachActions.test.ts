@@ -8,6 +8,7 @@ describe('buildCoachPayload', () => {
       coachMoments: [{ index: 0, moveNo: 1, side: 'W', san: 'e4', tag: 'Best' }],
       movesCount: 6,
       openingText: 'Italian Game',
+      pgn: '1. e4 e5',
     });
     expect(payload.summary).toEqual(
       expect.objectContaining({
@@ -25,6 +26,7 @@ describe('buildCoachPayload', () => {
       coachMoments: [],
       movesCount: 0,
       openingText: null,
+      pgn: null,
     });
     expect(payload.summary).toBeNull();
     expect(payload.totalPlies).toBe(1);

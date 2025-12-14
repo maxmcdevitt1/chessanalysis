@@ -81,9 +81,13 @@ function multiPvFor(elo: number, ms: number, config: PickerConfig) {
   let mpv =
     band.id === 'beginner' ? (ms < 200 ? 3 : 4) :
     band.id === 'developing' ? (ms < 250 ? 5 : 6) :
-    band.id === 'intermediate' ? 2 :
+    band.id === 'intermediate' ? (ms < 260 ? 3 : 5) :
     band.id === 'advanced' ? 2 : 1;
-  const bandMin = band.id === 'beginner' ? 4 : band.id === 'developing' ? 5 : 1;
+  const bandMin =
+    band.id === 'beginner' ? 4 :
+    band.id === 'developing' ? 5 :
+    band.id === 'intermediate' ? 3 :
+    1;
   mpv = Math.max(mpv, bandMin);
   return Math.min(mpv, band.multipvCap);
 }

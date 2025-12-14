@@ -19,7 +19,7 @@ export const STRENGTH_BANDS: StrengthBand[] = [
   { id: 'casual',     label: 'Casual',     range: [400, 600],   centerElo: 500,  display: 'Casual (400–600)' },
   { id: 'novice',     label: 'Novice',     range: [600, 800],   centerElo: 700,  display: 'Novice (600–800)' },
   { id: 'developing', label: 'Developing', range: [800, 1000],  centerElo: 900,  display: 'Developing (800–1000)' },
-  { id: 'club',       label: 'Club',       range: [1000, 1300], centerElo: 1150, display: 'Club (1000–1300)' },
+  { id: 'club',       label: 'Club',       range: [1050, 1350], centerElo: 1200, display: 'Club (1050–1350)' },
   { id: 'class_b',    label: 'Class B',    range: [1400, 1800], centerElo: 1600, display: 'Class B (1400–1800)' },
   { id: 'expert',     label: 'Expert',     range: [1800, 2100], centerElo: 1950, display: 'Expert (1800–2100)' },
   { id: 'master',     label: 'Master',     range: [2100, 2500], centerElo: 2300, display: 'Master (2100–2500)' },

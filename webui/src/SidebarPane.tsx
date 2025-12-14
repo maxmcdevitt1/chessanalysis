@@ -6,7 +6,7 @@ import React from 'react';
 import { useMemo } from 'react';
 import { FixedSizeList } from 'react-window';
 import { pgnFromMoves, annotatedPgn, analysisJson } from './utils/exporters';
-import type { CoachNote } from './hooks/useCoach';
+import type { CoachMomentNote, CoachMoveNote, CoachSections } from './types/coach';
 import OpeningPanel from './components/OpeningPanel';
 import CoachPanel from './components/CoachPanel';
 import EnginePanel from './components/EnginePanel';
@@ -89,10 +89,9 @@ type SidebarProps = {
   /* Engine strength band is controlled by App.tsx */
   engineBand: StrengthBandId;
   onEngineBandChange: (id: StrengthBandId) => void;
-  activeCoachNotes?: CoachNote[] | null;
-  coachNotes: CoachNote[];
-  currentPly?: number;
-  onJumpToPly?: (idx:number)=>void;
+  coachSections?: CoachSections | null;
+  coachMomentNotes?: CoachMomentNote[] | null;
+  coachMoveNotes?: CoachMoveNote[] | null;
   onGenerateNotes?: ()=>void | Promise<void>;
   coachBusy?: boolean;
   coachError?: string | null;
@@ -100,7 +99,6 @@ type SidebarProps = {
   evalPending?: boolean;
   engineSettings: Pick<Settings, 'engineThreads' | 'engineHashMb' | 'liveMultipv' | 'disableGpu'>;
   onSettingsChange: (patch: Partial<Settings>) => void;
-  onPanic: () => void;
 };
 
 type MoveRowData = {
@@ -355,10 +353,9 @@ export default function SidebarPane(props: SidebarProps) {
     analyzing, progress, onAnalyze, onAnalyzeFast, onStopAnalyze,
     review, onRebuildTo, bookDepth = 0, bookMask = [],
     engineBand, onEngineBandChange,
-    activeCoachNotes,
-    coachNotes,
-    currentPly = 0,
-    onJumpToPly,
+    coachSections,
+    coachMomentNotes,
+    coachMoveNotes,
     onGenerateNotes,
     coachBusy,
     coachError,
@@ -367,7 +364,6 @@ export default function SidebarPane(props: SidebarProps) {
     evalPending = false,
     engineSettings,
     onSettingsChange,
-    onPanic,
   } = props;
 
   const ProgressBar = ({ value }: { value?: number | null }) => {
@@ -538,13 +534,13 @@ export default function SidebarPane(props: SidebarProps) {
           {/* Coach */}
           <div style={S.subSection}>
           <CoachPanel
-            notes={coachNotes}
-            activeNotes={activeCoachNotes || null}
+            sections={coachSections || undefined}
             busy={!!coachBusy}
             onGenerate={onGenerateNotes}
-            onJumpToPly={onJumpToPly}
-            currentPly={currentPly}
             error={coachError || undefined}
+            momentNotes={coachMomentNotes || undefined}
+            fallbackNotes={coachMoveNotes || undefined}
+            activeMoveIndex={ply ? ply - 1 : null}
           />
           </div>
 
@@ -566,7 +562,6 @@ export default function SidebarPane(props: SidebarProps) {
             <SettingsPanel
               settings={engineSettings}
               onChange={onSettingsChange}
-              onPanic={onPanic}
             />
           </div>
 

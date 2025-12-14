@@ -56,7 +56,7 @@ New hooks (`useGameState`, `useEngineAnalysis`, `useBatchAnalysis`, `useOpeningD
 `App.tsx` now leans on dedicated hooks for read-only data:
 
 * `useReviewSummary` (`review` + `evalSeries` + rolling ACPL persistence)
-* `useCoachMoments` and `useCoachNotesForPly`
+* `useCoachMoments` (now feeding the Platinum-style coach summaries)
 * `useBestArrow` and `useEvalDisplayCp` for board overlays
 * `useEngineReply` centralises bot move picking, fallbacks, and the auto-reply effect
 * `useEngineStrength` owns band selection, persistence, and `setStrength` IPC
@@ -64,8 +64,8 @@ New hooks (`useGameState`, `useEngineAnalysis`, `useBatchAnalysis`, `useOpeningD
 * `useOpeningBookMoves` exposes deduplicated book continuations powered by the indexed book cache so both the picker and the UI use the same source of truth
 * `useAnalysisController` now reads from the same indexed book when tagging moves as “Book”, so analysis, UI suggestions, and the picker stay consistent
 * `usePlayerControls` centralises move application, draw/resign/new-game flows, and clock hand-offs so `App.tsx` stays declarative
-* `useCoachActions` wraps coach payload construction + submission so `App.tsx` no longer builds ad-hoc payloads for the commentary service
-* `useReviewAndCoach` composes review summaries, coach notes, and the “generate notes” action so the UI doesn’t juggle those hooks directly
+* `useCoachActions` wraps coach payload construction + submission (PGN + eval summaries) so `App.tsx` no longer builds ad-hoc payloads for the commentary service
+* `useReviewAndCoach` composes review summaries and the “generate notes” action so the UI doesn’t juggle those hooks directly. The coach now returns premium-style sections (executive summary, phase reviews, key moments, and lessons) along with a derived move-by-move breakdown so users can still scan each ply.
 * `useOpeningDetection` now derives its book mask/label seed from the indexed bot book (still falling back to the ECO trie for long labels), eliminating the duplicate trie scan each move
 * `useSettings()` now syncs with the Electron settings store so engine threads/hash, live MultiPV, and the “Disable GPU” flag survive restarts (in addition to the legacy band/auto-reply toggles).
 * The sidebar exposes a **Performance & Safety** panel (threads, hash, live MultiPV, GPU) and a Panic button wired to the new `engine:panic` IPC so users can immediately stop Stockfish if the laptop spikes.
