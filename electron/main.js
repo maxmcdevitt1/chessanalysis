@@ -97,14 +97,15 @@ function resolveStockfishPath() {
     : path.join(__dirname, 'bin');
   const platform = process.platform;
 
-  const names =
-    platform === 'win32'
-      ? ['stockfish.exe', 'stockfish-windows.exe']
-      : platform === 'darwin'
-        ? ['stockfish-mac', 'stockfish', 'stockfish-avx2']
-        : ['stockfish', 'stockfish-avx2'];
-
-  const resourceDirs = new Set(['']);
+    const names =
+      platform === 'win32'
+        ? ['stockfish.exe', 'stockfish-windows.exe']
+        : platform === 'darwin'
+          ? (process.arch === 'arm64'
+              ? ['stockfish-arm64', 'stockfish']
+              : ['stockfish-x64', 'stockfish'])
+          : ['stockfish', 'stockfish-avx2'];
+      const resourceDirs = new Set(['']);
   if (platform) resourceDirs.add(platform);
   if (platform === 'darwin') resourceDirs.add('mac');
   if (platform === 'linux') resourceDirs.add('linux');
