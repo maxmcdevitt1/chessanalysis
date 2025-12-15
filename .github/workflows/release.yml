@@ -1,0 +1,79 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm install
+
+      # ---- Build per OS ----
+      - name: Build Windows (NSIS + portable)
+        if: matrix.os == 'windows-latest'
+        run: npm run dist -- --win nsis portable
+
+      - name: Build macOS (DMG)
+        if: matrix.os == 'macos-latest'
+        run: npm run dist -- --mac dmg
+
+      - name: Build Linux (AppImage + deb)
+        if: matrix.os == 'ubuntu-latest'
+        run: npm run dist -- --linux appimage deb
+
+      # ---- Upload build outputs as artifacts (internal to Actions) ----
+      - name: Upload dist-electron folder
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-electron-${{ matrix.os }}
+          path: dist-electron/**
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release & Upload Assets
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+
+      - name: List files (debug)
+        run: ls -R ./artifacts
+
+      - name: Create Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/dist-electron/*.exe
+            artifacts/**/dist-electron/*.dmg
+            artifacts/**/dist-electron/*.AppImage
+            artifacts/**/dist-electron/*.deb
+            artifacts/**/dist-electron/*.zip
+            artifacts/**/dist-electron/*.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
