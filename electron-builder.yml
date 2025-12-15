@@ -1,5 +1,6 @@
 appId: com.maxmcdevitt.chessanalysis
 productName: chessanalysis
+publish: never
 
 directories:
   output: dist-electron
@@ -64,4 +65,5 @@ mac:
   target:
     - dmg
     - zip
+  publish: never
 
