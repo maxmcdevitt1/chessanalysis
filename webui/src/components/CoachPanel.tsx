@@ -1,15 +1,11 @@
 import React from 'react';
-import type { CoachSections, CoachMomentNote, CoachMoveNote } from '../types/coach';
-import CoachCard from './CoachCard';
+import type { CoachSections } from '../types/coach';
 
 export type CoachPanelProps = {
   sections?: CoachSections | null;
   busy?: boolean;
   error?: string | null;
   onGenerate?: () => void;
-  momentNotes?: CoachMomentNote[] | null;
-  fallbackNotes?: CoachMoveNote[] | null;
-  activeMoveIndex?: number | null;
 };
 
 function SectionCard({ title, content }: { title: string; content?: string | React.ReactNode }) {
@@ -44,17 +40,28 @@ function KeyList({ items }: { items?: string[] }) {
   );
 }
 
+const loadingStyles = {
+  outer: {
+    width: '100%',
+    height: 8,
+    borderRadius: 999,
+    background: '#1f2937',
+    overflow: 'hidden',
+    border: '1px solid #334155',
+  },
+  inner: {
+    width: '45%',
+    height: '100%',
+    background: 'linear-gradient(90deg, #3b82f6, #60a5fa)',
+  },
+} as const;
+
 export default function CoachPanel({
   sections,
   busy = false,
   error,
   onGenerate,
-  momentNotes,
-  fallbackNotes,
-  activeMoveIndex = null,
 }: CoachPanelProps) {
-  const hasMomentNotes = Array.isArray(momentNotes) && momentNotes.length > 0;
-  const hasFallbackNotes = Array.isArray(fallbackNotes) && fallbackNotes.length > 0;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
@@ -76,17 +83,24 @@ export default function CoachPanel({
         </button>
       </div>
       {error && <div style={{ fontSize: 13, color: '#f28b3c' }}>{error}</div>}
-      {busy && <div style={{ fontSize: 13, color: '#bdbdbd' }}>The coach is analysing this game…</div>}
+      {busy && (
+        <div style={{ width: '100%' }}>
+          <div style={{ fontSize: 13, color: '#bdbdbd', marginBottom: 6 }}>Generating coach notes…</div>
+          <div style={loadingStyles.outer as React.CSSProperties}>
+            <div style={loadingStyles.inner as React.CSSProperties} />
+          </div>
+        </div>
+      )}
       {sections ? (
         <>
-          <SectionCard title="Executive Summary" content={sections.executiveSummary} />
-          <SectionCard title="Opening Review" content={sections.openingReview} />
-          <SectionCard title="Middlegame Review" content={sections.middlegameReview} />
-          <SectionCard title="Endgame Review" content={sections.endgameReview} />
-          <SectionCard title="Key Moments & Turning Points" content={<KeyList items={sections.keyMoments} />} />
+          <SectionCard title="Executive Summary" content={sections.executive?.text} />
+          <SectionCard title="Opening Review" content={sections.opening?.text} />
+          <SectionCard title="Middlegame Review" content={sections.middlegame?.text} />
+          <SectionCard title="Endgame Review" content={sections.endgame?.text} />
+          <SectionCard title="Key Moments & Turning Points" content={<KeyList items={sections.keyMoments?.bullets} />} />
           <SectionCard title="Three Most Important Lessons" content={
             <ol style={{ margin: 0, paddingLeft: 18 }}>
-              {(sections.lessons || []).map((line, idx) => (
+              {(sections.lessons?.bullets || []).map((line, idx) => (
                 <li key={`lesson-${idx}`} style={{ marginBottom: 4 }}>{line}</li>
               ))}
             </ol>
@@ -97,46 +111,6 @@ export default function CoachPanel({
           No coach summary yet. Generate notes to see a full premium-style review of this game.
         </div>
       )}
-      <div>
-        <div style={{ fontWeight: 600, fontSize: 15, margin: '6px 0' }}>Move insights</div>
-        {hasMomentNotes ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {momentNotes!.map((note) => (
-              <CoachCard
-                key={note.moveIndex}
-                note={note}
-                defaultExpanded={note.moveIndex === activeMoveIndex}
-                active={note.moveIndex === activeMoveIndex}
-              />
-            ))}
-          </div>
-        ) : hasFallbackNotes ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {fallbackNotes!.map((note) => (
-              <div
-                key={note.moveIndex}
-                style={{
-                  border: '1px solid #1f293b',
-                  borderRadius: 10,
-                  padding: '10px 12px',
-                  background: '#0d1527',
-                  fontSize: 13,
-                  lineHeight: '20px',
-                }}
-              >
-                <div style={{ fontWeight: 600, marginBottom: 4 }}>
-                  Move {note.moveNo}{note.side === 'B' ? '…' : '.'} {note.san || '?'}
-                </div>
-                {note.text}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div style={{ fontSize: 13, color: '#8f8f8f' }}>
-            Generate notes to see per-move coaching cards.
-          </div>
-        )}
-      </div>
     </div>
   );
 }

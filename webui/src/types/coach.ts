@@ -36,13 +36,27 @@ export type MomentItem = {
   motifs?: string[];
 };
 
+export type CoachSectionBlock =
+  | { title: 'Executive Summary'; text: string }
+  | { title: 'Opening Review'; text: string }
+  | { title: 'Middlegame Review'; text: string }
+  | { title: 'Endgame Review'; text: string }
+  | { title: 'Key Moments & Turning Points'; bullets: string[] }
+  | { title: 'Three Most Important Lessons'; bullets: string[] };
+
 export type CoachSections = {
-  executiveSummary: string;
-  openingReview: string;
-  middlegameReview: string;
-  endgameReview: string;
-  keyMoments: string[];
-  lessons: string[];
+  executive: { text: string };
+  opening: { text: string };
+  middlegame: { text: string };
+  endgame: { text: string };
+  keyMoments: { bullets: string[] };
+  lessons: { bullets: string[] };
+};
+
+export type CoachGate = {
+  isQuiet: boolean;
+  allowWhy: boolean;
+  allowDetails: boolean;
 };
 
 export type CoachMoveNote = {
@@ -54,6 +68,8 @@ export type CoachMoveNote = {
   tag?: string;
   deltaCp?: number | null;
   whyLine?: string | null;
+  bubbleTitle?: string | null;
+  gate?: CoachGate;
 };
 
 export type CoachMomentNote = {
@@ -70,6 +86,7 @@ export type CoachMomentNote = {
   pv?: string;
   evalBeforeLabel?: string | null;
   evalAfterLabel?: string | null;
+  gate?: CoachGate;
 };
 
 export type CoachInputs = {

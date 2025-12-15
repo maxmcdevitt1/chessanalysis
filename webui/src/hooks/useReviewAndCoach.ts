@@ -8,6 +8,7 @@ import type { GameOverState } from '../types/game';
 export type UseReviewAndCoachArgs = {
   moveEvals: MoveEval[];
   movesUci: string[];
+  bookMask: boolean[];
   coachBusy: boolean;
   runCoach: (inputs: CoachInputs) => Promise<any>;
   openingText: string | null;
@@ -28,6 +29,7 @@ function resultFromGameOver(state: GameOverState | null): string | null {
 export function useReviewAndCoach({
   moveEvals,
   movesUci,
+  bookMask,
   coachBusy,
   runCoach,
   openingText,
@@ -35,7 +37,7 @@ export function useReviewAndCoach({
   pgn,
 }: UseReviewAndCoachArgs) {
   const { review, evalSeries } = useReviewSummary(moveEvals);
-  const coachMoments = useCoachMoments(movesUci, moveEvals);
+  const coachMoments = useCoachMoments(movesUci, moveEvals, bookMask);
   const resultTag = resultFromGameOver(gameOver);
 
   const { onGenerateNotes } = useCoachActions({
@@ -58,5 +60,5 @@ export function useReviewAndCoach({
     pgn,
   });
 
-  return { review, evalSeries, onGenerateNotes };
+  return { review, evalSeries, coachMoments, onGenerateNotes };
 }

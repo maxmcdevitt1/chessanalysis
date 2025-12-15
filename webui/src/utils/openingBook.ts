@@ -5,6 +5,13 @@ type BookMove = { uci: string; next: string; w: number };
 type BookNode = { depth: number; labels?: { eco:string; name:string; variation?:string }[]; moves: BookMove[] };
 type Book = { root: string; nodes: Record<string, BookNode> };
 
+export type BookDetectionResult = {
+  mask: boolean[];
+  depth: number;
+  label: { eco:string; name:string; variation?:string } | null;
+  ready: boolean;
+};
+
 let BOOK_CACHE: Book | null = null;
 
 function normFen3FromFull(fen: string): string {
@@ -82,3 +89,52 @@ export async function topBookMovesForCurrent(movesUci: string[]): Promise<BookMo
 }
 
 export { normFen3FromFull };
+
+export async function detectOpeningFromBook(movesUci: string[]): Promise<BookDetectionResult> {
+  const book = await loadOpeningBook();
+  if (!book) {
+    return {
+      mask: movesUci.map(() => false),
+      depth: 0,
+      label: null,
+      ready: true,
+    };
+  }
+
+  const ch = new Chess();
+  const mask: boolean[] = [];
+  let depth = 0;
+  let label: { eco:string; name:string; variation?:string } | null = null;
+  let invalid = false;
+
+  for (let i = 0; i < movesUci.length; i++) {
+    if (invalid) {
+      mask.push(false);
+      continue;
+    }
+    const mv = movesUci[i];
+    const move = ch.move({ from: mv.slice(0,2), to: mv.slice(2,4), promotion: mv.slice(4) || undefined } as any);
+    if (!move) {
+      mask.push(false);
+      invalid = true;
+      continue;
+    }
+    const fen3 = normFen3FromFull(ch.fen());
+    const node = book.nodes[fen3];
+    const inBook = Boolean(node);
+    mask.push(inBook);
+    if (inBook) {
+      depth = i + 1;
+      if (node?.labels?.length) {
+        label = node.labels[0];
+      }
+    }
+  }
+
+  return {
+    mask,
+    depth,
+    label,
+    ready: true,
+  };
+}

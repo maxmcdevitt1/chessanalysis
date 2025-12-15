@@ -29,16 +29,35 @@ function formatEvalLine(note: CoachMomentNote) {
   return `Eval: ${before}`;
 }
 
+function clampSentences(text: string | undefined, limit: number) {
+  if (!text) return '';
+  const parts = text
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!parts.length) return text.trim();
+  return parts.slice(0, Math.max(1, limit)).join(' ');
+}
+
 export default function CoachCard({ note, compact = false, defaultExpanded = false, active = false }: CoachCardProps) {
-  const [expanded, setExpanded] = useState(defaultExpanded);
+  const quietLabel = note.label === 'Best' || note.label === 'Good' || note.label === 'Book';
+  const gate = note.gate;
+  const isQuiet = gate?.isQuiet ?? quietLabel;
+  const allowDetails = gate?.allowDetails ?? !isQuiet;
+  const allowWhy = gate?.allowWhy ?? !isQuiet;
+  const hasDetailFields = allowDetails && Boolean(note.opponentIdea || note.refutation || note.betterPlan || note.pv);
+  const [expanded, setExpanded] = useState(defaultExpanded && hasDetailFields);
   useEffect(() => {
-    setExpanded(defaultExpanded);
-  }, [note.moveIndex, defaultExpanded]);
+    setExpanded(defaultExpanded && hasDetailFields);
+  }, [note.moveIndex, defaultExpanded, hasDetailFields]);
 
   const glyph = note.side === 'B' ? '…' : '.';
-  const evalLine = formatEvalLine(note);
+  const evalLine = isQuiet ? null : formatEvalLine(note);
   const bodyFont = compact ? 13 : 14;
   const headerFont = compact ? 14 : 16;
+  const headline = note.bubbleTitle || `Move ${note.moveNo}${glyph} ${note.san}`;
+  const bodyText = clampSentences(note.why, isQuiet ? 1 : 2);
+  const showPrinciple = !isQuiet && allowWhy && Boolean(note.principle);
 
   return (
     <div
@@ -55,9 +74,12 @@ export default function CoachCard({ note, compact = false, defaultExpanded = fal
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12 }}>
         <div>
-          <div style={{ fontWeight: 600, fontSize: headerFont }}>
-            Move {note.moveNo}{glyph} {note.san}
-          </div>
+          <div style={{ fontWeight: 600, fontSize: headerFont }}>{headline}</div>
+          {!note.bubbleTitle && (
+            <div style={{ fontSize: 12, color: '#94a3b8' }}>
+              Move {note.moveNo}{glyph} {note.san}
+            </div>
+          )}
           {evalLine && <div style={{ fontSize: compact ? 11 : 12, color: '#94a3b8', marginTop: 2 }}>{evalLine}</div>}
         </div>
         <span
@@ -74,58 +96,62 @@ export default function CoachCard({ note, compact = false, defaultExpanded = fal
           {note.label}
         </span>
       </div>
-      <div style={{ marginTop: 8 }}>{note.why}</div>
-      {note.principle && (
+      <div style={{ marginTop: 8 }}>{bodyText}</div>
+      {showPrinciple && note.principle && (
         <div style={{ marginTop: 8, fontSize: 12, color: '#bfdbfe' }}>
           Principle: <strong>{note.principle}</strong>
         </div>
       )}
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          setExpanded((prev) => !prev);
-        }}
-        style={{
-          marginTop: 10,
-          border: 'none',
-          background: 'transparent',
-          color: '#93c5fd',
-          fontSize: 13,
-          fontWeight: 600,
-          cursor: 'pointer',
-          padding: 0,
-        }}
-      >
-        {expanded ? 'Hide details' : 'Show details'}
-      </button>
-      {expanded && (
-        <div style={{ marginTop: 10, borderTop: '1px solid rgba(148,163,184,0.25)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {note.opponentIdea && (
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Opponent idea</div>
-              <div style={{ fontSize: 13 }}>{note.opponentIdea}</div>
+      {hasDetailFields && (
+        <>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setExpanded((prev) => !prev);
+            }}
+            style={{
+              marginTop: 10,
+              border: 'none',
+              background: 'transparent',
+              color: '#93c5fd',
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: 'pointer',
+              padding: 0,
+            }}
+          >
+            {expanded ? 'Hide details' : 'Show details'}
+          </button>
+          {expanded && (
+            <div style={{ marginTop: 10, borderTop: '1px solid rgba(148,163,184,0.25)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {note.opponentIdea && (
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Opponent idea</div>
+                  <div style={{ fontSize: 13 }}>{note.opponentIdea}</div>
+                </div>
+              )}
+              {note.refutation && (
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Refutation</div>
+                  <div style={{ fontSize: 13 }}>{note.refutation}</div>
+                </div>
+              )}
+              {note.betterPlan && (
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Better plan</div>
+                  <div style={{ fontSize: 13 }}>{note.betterPlan}</div>
+                </div>
+              )}
+              {note.pv && (
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>PV</div>
+                  <div style={{ fontSize: 13, fontFamily: 'monospace' }}>{note.pv}</div>
+                </div>
+              )}
             </div>
           )}
-          {note.refutation && (
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Refutation</div>
-              <div style={{ fontSize: 13 }}>{note.refutation}</div>
-            </div>
-          )}
-          {note.betterPlan && (
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Better plan</div>
-              <div style={{ fontSize: 13 }}>{note.betterPlan}</div>
-            </div>
-          )}
-          {note.pv && (
-            <div>
-              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>PV</div>
-              <div style={{ fontSize: 13, fontFamily: 'monospace' }}>{note.pv}</div>
-            </div>
-          )}
-        </div>
+        </>
       )}
     </div>
   );

@@ -98,6 +98,7 @@ Alternatively run `npm run dev:ui` in one terminal and `npm run dev:app` in anot
 - **Engine config**: The UI slider persists the target Elo via `setStrength`; per-move play settings are applied inside the picker (MultiPV, threads/hash, movetime) and passed through the adapter on every request. Stockfish searches are always used for move selection (no book moves from the engine side).
 - **Opening labels**: The renderer prefers Polyglot ECO/name via the `identifyOpening` IPC. If none is found, it falls back to trie/JSON labels; opening masks/depth still come from the trie/fallback helpers.
 - **Coach notes**: The Ollama-backed coach now produces premium-style summaries (Executive Summary, phase reviews, turning points, and lessons) plus a derived move-by-move breakdown. The renderer requests these via `coach:generate`.
+- **Human move commentary**: The short per-move bubbles no longer come from the IPC payload. Instead `webui/src/coach/coachBubble.ts` deterministically rebuilds the text from each moment’s FEN, SAN, and tag. Templates stay Chess.com-like (book/best/good/mistake/blunder tone) and are protected by an anti-repetition buffer. Tweak phrasing or anchors in that module—no server changes required.
 - For more detail, see `electron/engine/uci.js` (engine lifecycle + IPC), `electron/main.js` (IPC wiring), and `webui/src/App.tsx` (game state + coach/review flows).
 
 ## Performance guardrails

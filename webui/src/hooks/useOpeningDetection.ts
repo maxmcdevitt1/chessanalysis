@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { EngineAdapter, OpeningDetection } from '../engine/types';
 import { detectOpening, ensureOpeningTrieLoaded } from '../openings/matcher';
-import { bookMaskForHistory, bookLineForHistory } from '../book/bookIndex';
+import { detectOpeningFromBook } from '../utils/openingBook';
 
 export type UseOpeningDetectionArgs = {
   engine: EngineAdapter | null;
@@ -47,32 +47,6 @@ function formatLabel(value: OpeningSummary | OpeningDetection): string {
   return value.eco || '';
 }
 
-export function deriveBookDetection(movesUci: string[]): {
-  mask: boolean[];
-  depth: number;
-  fallback: OpeningSummary;
-  label: string;
-} {
-  const mask = bookMaskForHistory(movesUci);
-  const maskDepthIdx = mask.findIndex((flag) => !flag);
-  const depthFromMask = maskDepthIdx === -1 ? mask.length : maskDepthIdx;
-  const bookLine = bookLineForHistory(movesUci);
-  const fallback = bookLine
-    ? {
-        eco: bookLine.eco,
-        name: bookLine.name,
-        variation: bookLine.variation,
-        plyDepth: depthFromMask,
-      }
-    : null;
-  return {
-    mask,
-    depth: depthFromMask,
-    fallback,
-    label: formatLabel(fallback),
-  };
-}
-
 export function useOpeningDetection({
   engine,
   movesUci,
@@ -90,18 +64,66 @@ export function useOpeningDetection({
     let cancelled = false;
     const controller = new AbortController();
     const awaitEngine = !!engine && hasMoves;
-    const bookSeed = deriveBookDetection(movesUci);
 
     setState({
       opening: null,
-      fallbackOpening: bookSeed.fallback,
-      bookMask: bookSeed.mask,
-      bookDepth: bookSeed.depth,
-      label: bookSeed.label,
+      fallbackOpening: null,
+      bookMask: [],
+      bookDepth: 0,
+      label: '',
       isLoading: hasMoves,
       error: null,
-      bookReady: true,
+      bookReady: false,
     });
+
+    async function runBookDetection() {
+      if (!hasMoves) {
+        setState((prev) => ({
+          ...prev,
+          bookMask: [],
+          bookDepth: 0,
+          fallbackOpening: null,
+          label: '',
+          bookReady: true,
+          isLoading: awaitEngine ? prev.isLoading : false,
+        }));
+        return;
+      }
+
+      try {
+        const book = await detectOpeningFromBook(movesUci);
+        if (cancelled) return;
+        const fallback = book.label
+          ? {
+              eco: book.label.eco,
+              name: book.label.name,
+              variation: book.label.variation,
+              plyDepth: book.depth,
+            }
+          : null;
+        setState((prev) => {
+          const fallbackOpening = fallback ?? prev.fallbackOpening;
+          const label = formatLabel(prev.opening ?? fallbackOpening);
+          return {
+            ...prev,
+            fallbackOpening,
+            bookMask: book.mask,
+            bookDepth: book.depth,
+            label,
+            bookReady: book.ready,
+            isLoading: awaitEngine ? prev.isLoading : false,
+          };
+        });
+      } catch (err) {
+        if (cancelled) return;
+        setState((prev) => ({
+          ...prev,
+          error: prev.error ?? (err instanceof Error ? err.message : String(err)),
+          bookReady: true,
+          isLoading: awaitEngine ? prev.isLoading : false,
+        }));
+      }
+    }
 
     async function runLocalDetection() {
       if (!hasMoves) {
@@ -137,7 +159,7 @@ export function useOpeningDetection({
         }));
       }
     }
-
+    runBookDetection();
     runLocalDetection();
 
     if (awaitEngine && engine) {

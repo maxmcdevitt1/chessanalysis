@@ -232,7 +232,7 @@ function bestSanFromUci(fen: string | null, bestUci: string | null | undefined) 
   }
 }
 
-export function useCoachMoments(movesUci: string[], moveEvals: MoveEval[]): CoachInputs['moments'] {
+export function useCoachMoments(movesUci: string[], moveEvals: MoveEval[], bookMask: boolean[] = []): CoachInputs['moments'] {
   return useMemo(() => {
     const total = movesUci.length;
     const game = new Chess();
@@ -244,6 +244,7 @@ export function useCoachMoments(movesUci: string[], moveEvals: MoveEval[]): Coac
     let lastKingSafety: string | null = null;
     return movesUci.map((uci, index) => {
       const m: any = moveEvals[index] ?? {};
+      const isBookMaskHit = Boolean(bookMask[index]);
       const side: 'W' | 'B' = game.turn() === 'w' ? 'W' : 'B';
       const positionSummary = summarizePosition(game, { white: whiteCastle, black: blackCastle });
       const fenBefore = typeof m.fenBefore === 'string' ? m.fenBefore : game.fen();
@@ -265,7 +266,8 @@ export function useCoachMoments(movesUci: string[], moveEvals: MoveEval[]): Coac
       const best =
         bestSanExplicit ||
         bestSanFromUci(fenBefore, typeof m.engineBest === 'string' ? m.engineBest : typeof m.best === 'string' ? m.best : null);
-      const tag = typeof m.tag === 'string' ? m.tag : '';
+      const rawTag = typeof m.tag === 'string' ? m.tag : '';
+      const tag = isBookMaskHit ? 'Book' : rawTag;
       const cpBeforeVal =
         typeof m.cpBefore === 'number'
           ? m.cpBefore
@@ -322,5 +324,5 @@ export function useCoachMoments(movesUci: string[], moveEvals: MoveEval[]): Coac
         motifs: motifsForMove,
       };
     });
-  }, [movesUci, moveEvals]);
+  }, [movesUci, moveEvals, bookMask]);
 }

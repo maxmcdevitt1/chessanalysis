@@ -1,18 +1,41 @@
-import { describe, it, expect } from 'vitest';
-import { deriveBookDetection } from '../useOpeningDetection';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { detectOpeningFromBook } from '../../utils/openingBook';
 
-describe('deriveBookDetection', () => {
-  it('derives mask/label from the book index', () => {
-    const seed = deriveBookDetection(['e2e4', 'e7e5', 'g1f3']);
-    expect(seed.mask.slice(0, 3)).toEqual([true, true, true]);
-    expect(seed.depth).toBeGreaterThanOrEqual(3);
-    expect(seed.label).toContain('('); // should include ECO code
+const MOCK_BOOK = {
+  root: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq',
+  nodes: {
+    'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq': {
+      depth: 0,
+      moves: [{ uci: 'e2e4', next: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq', w: 1 }],
+    },
+    'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq': {
+      depth: 1,
+      labels: [{ eco: 'C20', name: 'King\'s Pawn Game', variation: 'Open Game' }],
+      moves: [{ uci: 'c7c5', next: 'rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq', w: 1 }],
+    },
+  },
+};
+
+describe('detectOpeningFromBook', () => {
+  beforeEach(() => {
+    (globalThis as any).fetch = vi.fn(async () => ({
+      ok: true,
+      json: async () => MOCK_BOOK,
+    }));
   });
 
-  it('returns empty data when history is off book', () => {
-    const seed = deriveBookDetection(['a2a4', 'b7b5', 'h2h4', 'a7a5']);
-    expect(seed.mask).toEqual([false, false, false, false]);
-    expect(seed.fallback).toBeNull();
-    expect(seed.label).toBe('');
+  it('detects labels and masks that follow the book', async () => {
+    const res = await detectOpeningFromBook(['e2e4']);
+    expect(res.ready).toBe(true);
+    expect(res.mask).toEqual([true]);
+    expect(res.depth).toBe(1);
+    expect(res.label).toEqual({ eco: 'C20', name: 'King\'s Pawn Game', variation: 'Open Game' });
+  });
+
+  it('flags moves outside of book as non-opening', async () => {
+    const res = await detectOpeningFromBook(['a2a4']);
+    expect(res.mask).toEqual([false]);
+    expect(res.depth).toBe(0);
+    expect(res.label).toBeNull();
   });
 });

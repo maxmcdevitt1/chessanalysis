@@ -4,8 +4,17 @@ import { Chessboard } from 'react-chessboard';
 import type { Square } from './chess-compat';
 import EvalSparkline from './EvalSparkline';
 import { TagBadge } from './TagBadges';
-import CoachCard from './components/CoachCard';
 import type { CoachMomentNote, CoachMoveNote } from './types/coach';
+
+function clampSentences(text: string | undefined, limit: number) {
+  if (!text) return '';
+  const parts = text
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!parts.length) return text.trim();
+  return parts.slice(0, Math.max(1, limit)).join(' ');
+}
 
 /* ----------------------------- Types & Props ------------------------------ */
 
@@ -570,17 +579,24 @@ export default function BoardPane(props: BoardPaneProps) {
                 top: Math.max(12, boardWidth * 0.08),
                 ...coachOverlayPositionStyle,
                 width: coachOverlayWidth,
-                maxWidth: 320,
-                pointerEvents: 'auto',
+                background: 'rgba(15,23,42,0.96)',
+                border: '1px solid rgba(59,130,246,0.4)',
+                borderRadius: 12,
+                padding: '12px 14px',
+                color: '#e2e8f0',
+                fontSize: 15,
+                lineHeight: '22px',
+                boxShadow: '0 12px 28px rgba(0,0,0,0.35)',
+                pointerEvents: 'none',
+                backdropFilter: 'blur(6px)',
                 zIndex: 5,
               }}
             >
-              <CoachCard
-                key={`moment-${coachMomentNote.moveIndex}`}
-                note={coachMomentNote}
-                compact
-                defaultExpanded={false}
-              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: 14, marginBottom: 6 }}>
+                <span>{`Move ${coachMomentNote.moveNo}${coachMomentNote.side === 'B' ? '…' : '.'} ${coachMomentNote.san || '?'}`}</span>
+                {coachMomentNote.label ? <TagBadge tag={coachMomentNote.label} size={18} /> : null}
+              </div>
+              <div style={{ whiteSpace: 'normal' }}>{clampSentences(coachMomentNote.why, 2)}</div>
             </div>
           ) : coachMoveNote ? (
             <div
@@ -603,9 +619,7 @@ export default function BoardPane(props: BoardPaneProps) {
               }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: 14, marginBottom: 6 }}>
-                <span>
-                  Coach on move {coachMoveNote.moveNo}{coachMoveNote.side === 'B' ? '…' : '.'} {coachMoveNote.san || '?'}
-                </span>
+                <span>{coachMoveNote.bubbleTitle || `Coach on move ${coachMoveNote.moveNo}${coachMoveNote.side === 'B' ? '…' : '.'} ${coachMoveNote.san || '?'}`}</span>
                 {coachMoveNote.tag ? <TagBadge tag={coachMoveNote.tag} size={18} /> : null}
               </div>
               <div style={{ whiteSpace: 'normal' }}>{coachMoveNote.text}</div>

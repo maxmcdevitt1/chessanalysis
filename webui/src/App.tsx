@@ -28,9 +28,26 @@ import { usePgnImport } from './hooks/usePgnImport';
 import { useOpeningBookMoves } from './hooks/useOpeningBookMoves';
 import { usePlayerControls } from './hooks/usePlayerControls';
 import { useReviewAndCoach } from './hooks/useReviewAndCoach';
+import { buildCoachBubbles } from './coach/coachBubble';
 import { useCoachNoteForPly, useCoachMomentNoteForPly } from './hooks/useCoachNoteForPly';
+import type { CoachGate } from './types/coach';
 
 const MOVES_PANEL_WIDTH = 320;
+
+function clampSentences(text: string | null | undefined, limit: number) {
+  if (!text) return '';
+  const segments = text
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!segments.length) return text.trim();
+  return segments.slice(0, Math.max(1, limit)).join(' ');
+}
+
+function stripWhyPrefix(text: string | null | undefined) {
+  if (!text) return '';
+  return text.replace(/^why it mattered[:\s-]+/i, '').trim();
+}
 
 /* ----------------------------- metrics helpers --------------------------- */
 
@@ -289,9 +306,10 @@ export default function App() {
 
   /* ------------------ review (accuracy / avg CPL) ------------------------ */
 
-  const { review, evalSeries, onGenerateNotes } = useReviewAndCoach({
+  const { review, evalSeries, coachMoments, onGenerateNotes } = useReviewAndCoach({
     moveEvals,
     movesUci,
+    bookMask,
     coachBusy,
     runCoach,
     openingText: openingText || null,
@@ -299,8 +317,48 @@ export default function App() {
     pgn: game.pgn({ max_width: 0, newline_char: ' ' }),
   });
 
-  const coachMomentNote = useCoachMomentNoteForPly(ply, coachMomentNotes);
-  const coachMoveNote = useCoachNoteForPly(ply, coachMoveNotes);
+  const coachBubbleMap = useM(() => buildCoachBubbles(coachMoments || []), [coachMoments]);
+  const coachGateMap = useM(() => {
+    const map = new Map<number, CoachGate>();
+    coachBubbleMap.forEach((bubble, key) => {
+      if (bubble?.gate) map.set(key, bubble.gate);
+    });
+    return map;
+  }, [coachBubbleMap]);
+
+  const effectiveCoachMoveNotes = useM(() => {
+    if (!coachMoveNotes || !coachMoveNotes.length) return coachMoveNotes;
+    return coachMoveNotes.map((note) => {
+      const bubble = coachBubbleMap.get(note.moveIndex);
+      const gate = coachGateMap.get(note.moveIndex);
+      let text = bubble?.body || note.text || '';
+      if (gate) text = clampSentences(text, gate.isQuiet ? 1 : 2);
+      let whyLine = gate && gate.allowWhy === false ? null : (note.whyLine ?? null);
+      if (gate?.allowWhy && whyLine) {
+        const merged = `${text.trim()} ${stripWhyPrefix(whyLine)}`.trim();
+        text = clampSentences(merged, gate.isQuiet ? 1 : 2);
+        whyLine = null;
+      }
+      return {
+        ...note,
+        text,
+        bubbleTitle: bubble?.title || note.bubbleTitle,
+        gate: gate || note.gate,
+        whyLine,
+      };
+    });
+  }, [coachMoveNotes, coachBubbleMap, coachGateMap]);
+
+  const enhancedCoachMomentNotes = useM(() => {
+    if (!coachMomentNotes || !coachMomentNotes.length) return coachMomentNotes;
+    return coachMomentNotes.map((note) => {
+      const gate = coachGateMap.get(note.moveIndex);
+      return gate ? { ...note, gate } : note;
+    });
+  }, [coachMomentNotes, coachGateMap]);
+
+  const coachMomentNote = useCoachMomentNoteForPly(ply, enhancedCoachMomentNotes);
+  const coachMoveNote = useCoachNoteForPly(ply, effectiveCoachMoveNotes);
 
   // best-move arrow
   const bestArrow = useBestArrow(ply, moveEvals);
@@ -431,8 +489,8 @@ export default function App() {
           engineBand={engineBand}
           onEngineBandChange={setEngineBand}
           coachSections={coachSections}
-          coachMomentNotes={coachMomentNotes}
-          coachMoveNotes={coachMoveNotes}
+          coachMomentNotes={enhancedCoachMomentNotes}
+          coachMoveNotes={effectiveCoachMoveNotes}
           onGenerateNotes={onGenerateNotes}
           coachBusy={coachBusy}
           coachError={coachError}

@@ -18,6 +18,14 @@ const AUTO_PULL = String(process.env.AUTO_PULL_COACH || '1') === '1';
 const COACH_KEEP_ALIVE = process.env.COACH_KEEP_ALIVE || '2m';
 const NUM_CTX = Number(process.env.COACH_NUM_CTX || 1536);
 const MAX_COACH_NOTES = Number(process.env.COACH_MAX_NOTES || '10');
+const SECTION_SCHEMA_TEXT = `{
+  "executive": {"text": string},
+  "opening": {"text": string},
+  "middlegame": {"text": string},
+  "endgame": {"text": string},
+  "keyMoments": {"bullets": ["string","string","string"]},
+  "lessons": {"bullets": ["string","string","string"]}
+}`;
 const NOTE_SCHEMA_TEXT = `{
   "title": string,
   "tag": "Best"|"Good"|"Inaccuracy"|"Mistake"|"Blunder",
@@ -38,6 +46,19 @@ const NOTE_SYSTEM_PROMPT = [
   '- Use provided eval labels to describe shifts, e.g. "This shifts the game from equal to a clear edge for Black."',
   '- Avoid generic praise unless it immediately states what it enables.',
   'Available inputs will be listed below.',
+].join('\n');
+
+const SECTION_SYSTEM_PROMPT = [
+  'You are a Chess.com-style coach summarising a single game. Output JSON only.',
+  `Schema:\n${SECTION_SCHEMA_TEXT}`,
+  'Rules:',
+  '- Executive/Opening/Middlegame/Endgame texts must be <=2 sentences each.',
+  '- Each text must reference either a move number (e.g., "move 14") or the detected opening name.',
+  '- Use concrete anchors: mention plans, structures, or turning points—no generic filler or contradictions.',
+  '- Key moments require exactly 3 bullets formatted "Move X: ... → Habit: ...".',
+  '- Lessons require exactly 3 bullets formatted "Pattern: ... → Fix: ...".',
+  '- Do not list multiple alternative moves unless a PV line is provided; otherwise suggest a plan.',
+  '- Never include evaluation numbers, centipawns, or engine jargon.',
 ].join('\n');
 
 function log(...args) { if (COACH_DEBUG) console.log('[coach]', ...args); }
@@ -139,29 +160,48 @@ const openingSnippets = [
 
 const BOOK_OPENING_TEMPLATES = {
   e4: {
-    idea: 'Claims central space and opens lines for the queen and bishop.',
-    plan: 'Develop Nf3, Nc3, and bishops quickly, then castle.',
-    watch: 'Black replies …e5, …c5, or …e6 leading to Open, Sicilian, or French games.',
-    lesson: 'After 1.e4, prepare c2–c3 or d2–d4 to challenge the center once pieces are out.',
+    idea: 'Claims central space and frees two pieces.',
+    plan: 'Develop Nf3/Nc3, bring bishops out, then castle.',
   },
   d4: {
-    idea: 'Claims space and controls e5/c5, steering toward Queen’s Pawn systems.',
-    plan: 'Support with Nf3, c4, and Bf4/Bg5, then castle and fight for the center.',
-    watch: 'Expect …d5, …Nf6, or …f5 (Dutch); be ready with c4 or e3 setups.',
-    lesson: 'After 1.d4, watch for the right moment to play c4 versus …d5.',
+    idea: 'Claims space and controls e5/c5 squares.',
+    plan: 'Support with Nf3, c4, and Bf4/Bg5 before castling.',
   },
   c4: {
-    idea: 'Pressures d5 from the flank and keeps move-order tricks alive.',
-    plan: 'Use Nc3 and g3/Bg2 to control dark squares before striking with d4.',
-    watch: 'Black may answer with …e5, …c5, or …Nf6—prepare to exploit the long diagonal.',
-    lesson: 'In the English, provoke …d5 and respond with cxd5 or e4 plans.',
+    idea: 'Pressures d5 from the flank while staying flexible.',
+    plan: 'Use Nc3 and g3/Bg2, then aim for d4 when ready.',
   },
   nf3: {
-    idea: 'Develops flexibly, postponing pawn commitments while eyeing d4.',
-    plan: 'Follow with g3/c4 or d4 depending on Black’s setup, then castle.',
-    watch: 'Black setups with …d5, …Nf6, or …g6 inform whether you transpose to d4 or c4 systems.',
-    lesson: '1.Nf3 players should know how to transpose to Queen’s Pawn or English structures.',
+    idea: 'Develops flexibly without committing the center.',
+    plan: 'Follow with g3/c4 or d4 depending on Black’s reply.',
   },
+};
+
+const PRIMARY_REASON_TEXT = {
+  development: 'develops a piece',
+  defense: 'stops a threat',
+  consolidation: 'improves the worst piece',
+  attack: 'creates a threat',
+  tactic: 'creates a threat',
+  mistake: 'misses a tactic',
+};
+
+const PLAN_TEXT = {
+  development: 'Plan: keep developing and castle early.',
+  defense: 'Plan: neutralize pressure and guard the king.',
+  consolidation: 'Plan: coordinate rooks and cover weak squares.',
+  attack: 'Plan: bring more pieces toward the target.',
+  tactic: 'Plan: calculate forcing lines before committing.',
+  mistake: 'Plan: reset the plan and repair the structure.',
+};
+
+const WHY_LINES = {
+  development: 'Why it mattered: guarded central squares before new plans.',
+  defense: 'Why it mattered: shielded the king from looming pressure.',
+  consolidation: 'Why it mattered: tightened the structure before counterplay.',
+  attack: 'Why it mattered: maintained threats and limited counterplay.',
+  tactic: 'Why it mattered: swung momentum through concrete threats.',
+  mistake: 'Why it mattered: handed the opponent easy counterplay.',
 };
 
 const tagInsights = {
@@ -228,108 +268,143 @@ function pickLessons(summary = {}, swing) {
   return Array.from(chosen);
 }
 
+function detectPhase(moment) {
+  if (moment?.phase) return moment.phase;
+  if (moment?.moveNo >= 30) return 'endgame';
+  if (moment?.moveNo > 10) return 'middlegame';
+  return 'opening';
+}
+
+function isBookOpening(moment) {
+  const tag = String(moment?.tag || '').toLowerCase();
+  const delta = Math.abs(Number(moment?.deltaCp || 0));
+  return tag.includes('book') && moment?.moveNo <= 10 && delta < 30;
+}
+
+function classifyMoveIntent(moment) {
+  const tag = String(moment?.tag || '').toLowerCase();
+  const san = String(moment?.san || '');
+  const delta = Math.abs(Number(moment?.deltaCp || 0));
+  if (isBookOpening(moment)) return 'development';
+  if (tag.includes('blunder')) return 'mistake';
+  if (tag.includes('mistake')) return delta >= 120 ? 'tactic' : 'mistake';
+  if (delta >= 220) return 'tactic';
+  if (san.includes('+') || san.includes('x')) return 'attack';
+  if (moment?.kingSafety && /uncastled|king/.test(moment.kingSafety)) return 'defense';
+  if (moment?.structureTag) return 'consolidation';
+  return 'development';
+}
+
+function sentenceCap(intent, moment) {
+  const phase = detectPhase(moment);
+  if (isBookOpening(moment)) return 2;
+  if (phase === 'opening') return 2;
+  if (phase === 'endgame') return 3;
+  if (intent === 'tactic' || intent === 'mistake') return 5;
+  return 4;
+}
+
+function normalizeSentence(raw) {
+  if (!raw) return '';
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+  return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
+}
+
+function enforceSentenceLimit(sentences, cap) {
+  const out = [];
+  for (const sentence of sentences) {
+    if (!sentence) continue;
+    out.push(normalizeSentence(sentence));
+    if (out.length >= cap) break;
+  }
+  return out.join(' ').trim();
+}
+
+function formatBookOpeningNote(moment) {
+  const key = String(moment?.san || '').toLowerCase();
+  const template = BOOK_OPENING_TEMPLATES[key];
+  const idea = template?.idea || 'Keeps theory and prepares smooth development.';
+  const plan = template?.plan || 'Continue normal development and castle soon.';
+  const text = [
+    `${moment.san || '?'} — Book.`,
+    `Idea: ${idea}`,
+    `Plan: ${plan}`,
+  ].join(' ');
+  return { text, whyLine: null };
+}
+
+function normalizeIntent(intent) {
+  return WHY_LINES[intent] ? intent : 'development';
+}
+
+function buildWhyLine(intent) {
+  return WHY_LINES[normalizeIntent(intent)];
+}
+
+function primaryReason(intent) {
+  return PRIMARY_REASON_TEXT[normalizeIntent(intent)] || 'keeps the plan on track';
+}
+
+function formatNormalSentences(moment, intent) {
+  const side = moment?.side === 'B' || moment?.side === 'Black' ? 'Black' : 'White';
+  const reason = primaryReason(intent);
+  const sentences = [`${side} played ${moment?.san || '?'} to ${reason}.`];
+  if (intent === 'attack' && moment?.tacticSummary) sentences.push(moment.tacticSummary);
+  if (intent === 'defense' && moment?.kingSafety) sentences.push(moment.kingSafety);
+  if (intent === 'consolidation' && moment?.structureTag) sentences.push(moment.structureTag);
+  if (intent === 'development' && moment?.positionSummary) sentences.push(moment.positionSummary);
+  if (!sentences[1] && moment?.centerSummary) sentences.push(moment.centerSummary);
+  if (intent === 'tactic' && !moment?.tacticSummary && moment?.positionSummary) sentences.push(moment.positionSummary);
+  const plan = PLAN_TEXT[intent];
+  if (plan) sentences.push(plan);
+  return sentences;
+}
+
+function formatHeuristicNote(moment) {
+  if (isBookOpening(moment)) {
+    const book = formatBookOpeningNote(moment);
+    if (book) return book;
+  }
+  const intent = classifyMoveIntent(moment);
+  const sentences = formatNormalSentences(moment, intent);
+  const capped = enforceSentenceLimit(sentences, sentenceCap(intent, moment));
+  return { text: capped, whyLine: buildWhyLine(intent) };
+}
+
 function buildLegacyMoveNotes(momentsInput) {
   const list = safeMoments(momentsInput);
   return list.map((m, idx) => {
     const moveIndex = Number.isInteger(m?.index) ? m.index : idx;
     const moveNo = Math.floor(moveIndex / 2) + 1;
     const side = m?.side === 'B' || m?.side === 'Black' ? 'B' : 'W';
-    const tag = String(m?.tag || '').toLowerCase();
     const before = Number.isFinite(m?.cpBefore) ? Number(m.cpBefore) : null;
     const after = Number.isFinite(m?.cpAfter) ? Number(m.cpAfter) : null;
     const delta = before != null && after != null ? after - before : null;
-    const next = list[idx + 1];
-    const nextSan = next?.san;
     const phase = m?.phase || 'middlegame';
-    const sideLabel = side === 'W' ? 'White' : 'Black';
-    const opponent = side === 'W' ? 'Black' : 'White';
-    const swing = delta != null ? `${Math.round(Math.abs(delta))} cp swing` : 'momentum shift';
-    const descriptors = [];
-    const isBook = tag.includes('book');
-    const bookKey = (m?.san || '').toLowerCase();
-    if (isBook && moveNo <= 2 && BOOK_OPENING_TEMPLATES[bookKey]) {
-      const tpl = BOOK_OPENING_TEMPLATES[bookKey];
-      const text = [
-        `${m?.san || '?'} — Book move.`,
-        tpl.idea,
-        `Plan: ${tpl.plan}.`,
-        `Watch for: ${tpl.watch}.`,
-        `Lesson: ${tpl.lesson}`,
-      ].join(' ');
-      return {
-        moveIndex,
-        moveNo,
-        side,
-        san: m?.san || '(?)',
-        text: text.trim(),
-        tag: m?.tag,
-        deltaCp: delta,
-      };
-    }
-
-    if (moveNo <= 3) {
-      const openingLine = openingSnippets.find((item) => item.match.test(m?.san || ''));
-      if (openingLine) descriptors.push(openingLine.text);
-    }
-
-    const family = tag.includes('blunder')
-      ? tagInsights.blunder
-      : tag.includes('mistake')
-        ? tagInsights.mistake
-        : tag.includes('inacc')
-          ? tagInsights.inaccuracy
-          : tag.includes('best')
-            ? tagInsights.best
-            : tag.includes('book')
-              ? tagInsights.book
-              : tagInsights.default;
-    const pushSentence = (raw) => {
-      const trimmed = (raw || '').trim();
-      if (!trimmed) return;
-      const sentence = /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
-      descriptors.push(sentence);
-    };
-
-    pushSentence(`${sideLabel} played ${m?.san || '?'} in the ${phase} and ${pickInsight(family, moveIndex)}`);
-    if (m.positionSummary) pushSentence(m.positionSummary);
-    else {
-      if (m.centerSummary) pushSentence(m.centerSummary);
-      if (m.structureTag) pushSentence(m.structureTag);
-      if (m.kingSafety) pushSentence(`King safety: ${m.kingSafety}`);
-    }
-    if (m.tacticSummary) pushSentence(m.tacticSummary);
-    if (typeof m.materialEdge === 'number' && Math.abs(m.materialEdge) >= 80) {
-      pushSentence(`${m.materialEdge > 0 ? 'White' : 'Black'} leads by ${(Math.abs(m.materialEdge) / 100).toFixed(1)} pawns`);
-    }
-    if (Array.isArray(m?.motifs) && m.motifs.length && m.index > 2) {
-      pushSentence(`Motifs: ${m.motifs.join(', ')}`);
-    }
-    if (nextSan) {
-      pushSentence(`${opponent} can counter with ${nextSan} to highlight this idea`);
-    }
-    if (m?.best && !tag.includes('best')) {
-      pushSentence(`Engine suggested ${m.best} to reinforce control before attacking`);
-    }
-    if (delta != null && Math.abs(delta) >= 100) {
-      pushSentence(`This sequence created a multi-move tactic worth a ${swing}`);
-    }
-    const seen = new Set();
-    const text = descriptors.filter((sentence) => {
-      if (seen.has(sentence)) return false;
-      seen.add(sentence);
-      return true;
-    }).join(' ');
+    const formatted = formatHeuristicNote({
+      ...m,
+      moveNo,
+      index: moveIndex,
+      side,
+      cpBefore: before,
+      cpAfter: after,
+      deltaCp: delta,
+      phase,
+    });
     return {
       moveIndex,
       moveNo,
       side,
       san: m?.san || '(?)',
-      text: text.trim(),
+      text: formatted.text.trim(),
       tag: m?.tag,
       deltaCp: delta,
+      whyLine: formatted.whyLine || null,
     };
   });
 }
+
 
 const MOMENT_TAGS = new Set(['Best', 'Good', 'Inaccuracy', 'Mistake', 'Blunder', 'Book']);
 
@@ -346,6 +421,9 @@ function normalizeMomentLabel(tagRaw) {
 function describeEvalShift(moment) {
   const before = moment?.evalBeforeLabel || null;
   const after = moment?.evalAfterLabel || null;
+  const tag = String(moment?.tag || '').toLowerCase();
+  const quiet = (tag.includes('best') || tag.includes('good') || tag.includes('book')) && Math.abs(Number(moment?.deltaCp || 0)) < 80;
+  if (quiet) return '';
   if (!before && !after) return '';
   if ((before || '') === (after || '')) return `Evaluation stayed ${before || after}.`;
   if (before && after) return `This shifts the game from ${before} to ${after}.`;
@@ -466,11 +544,15 @@ function normalizeMomentNote(raw, moment) {
     opponentIdea,
     refutation,
     betterPlan,
-    principle,
+    principle: quietLabel(label) ? undefined : principle,
     pv,
     evalBeforeLabel: moment?.evalBeforeLabel || null,
     evalAfterLabel: moment?.evalAfterLabel || null,
   };
+}
+
+function quietLabel(label) {
+  return label === 'Best' || label === 'Good' || label === 'Book';
 }
 
 async function generateMomentNotes(inputs, model) {
@@ -492,21 +574,24 @@ async function generateMomentNotes(inputs, model) {
         if (normalized) notes.push(normalized);
       }
     }
-    return notes.length ? notes : targets.map((moment) => ({
-      moveIndex: moment.index,
-      moveNo: moment.moveNo,
-      side: moment.side === 'B' || moment.side === 'Black' ? 'B' : 'W',
-      san: moment.san || '(?)',
-      label: normalizeMomentLabel(moment.tag),
-      why: describeEvalShift(moment) || 'Coach note unavailable.',
-      opponentIdea: moment.tacticSummary || undefined,
-      refutation: 'engine line unavailable',
-      betterPlan: moment.best ? `Consider ${moment.best} instead.` : undefined,
-      principle: 'Stay alert for forcing moves',
-      pv: '',
-      evalBeforeLabel: moment.evalBeforeLabel || null,
-      evalAfterLabel: moment.evalAfterLabel || null,
-    }));
+    return notes.length ? notes : targets.map((moment) => {
+      const label = normalizeMomentLabel(moment.tag);
+      return {
+        moveIndex: moment.index,
+        moveNo: moment.moveNo,
+        side: moment.side === 'B' || moment.side === 'Black' ? 'B' : 'W',
+        san: moment.san || '(?)',
+        label,
+        why: describeEvalShift(moment) || 'Coach note unavailable.',
+        opponentIdea: moment.tacticSummary || undefined,
+        refutation: 'engine line unavailable',
+        betterPlan: moment.best ? `Consider ${moment.best} instead.` : undefined,
+        principle: quietLabel(label) ? undefined : 'Stay alert for forcing moves',
+        pv: '',
+        evalBeforeLabel: moment.evalBeforeLabel || null,
+        evalAfterLabel: moment.evalAfterLabel || null,
+      };
+    });
   } catch (err) {
     console.error('[coach] moment note gen failed', err);
     return [];
@@ -524,7 +609,7 @@ function fallbackMomentNotes(moments) {
     opponentIdea: moment.tacticSummary || undefined,
     refutation: 'engine line unavailable',
     betterPlan: moment.best ? `Consider ${moment.best}.` : undefined,
-    principle: 'Stay alert for forcing moves',
+    principle: quietLabel(normalizeMomentLabel(moment.tag)) ? undefined : 'Stay alert for forcing moves',
     pv: '',
     evalBeforeLabel: moment.evalBeforeLabel || null,
     evalAfterLabel: moment.evalAfterLabel || null,
@@ -532,60 +617,309 @@ function fallbackMomentNotes(moments) {
 }
 
 function normalizeSections(sections, inputs) {
-  const summary = inputs?.summary || {};
-  const swing = keySwingMoment(inputs?.moments);
-  const fallback = heuristicSections(inputs);
-  const out = {
-    executiveSummary: (sections?.executiveSummary || '').trim() || fallback.executiveSummary,
-    openingReview: (sections?.openingReview || '').trim() || fallback.openingReview,
-    middlegameReview: (sections?.middlegameReview || '').trim() || fallback.middlegameReview,
-    endgameReview: (sections?.endgameReview || '').trim() || fallback.endgameReview,
-    keyMoments: Array.isArray(sections?.keyMoments) && sections.keyMoments.length ? sections.keyMoments : fallback.keyMoments,
-    lessons: Array.isArray(sections?.lessons) && sections.lessons.length ? sections.lessons.slice(0, 3) : pickLessons(summary, swing),
-  };
-  return out;
+  const validation = validateSectionsPayload(sections, inputs);
+  if (validation.ok) {
+    return { sections: validation.sections, fallback: false };
+  }
+  if (validation.reason) {
+    console.warn('[coach] section validation failed:', validation.reason);
+  }
+  return { sections: buildFallbackSections(inputs), fallback: true };
 }
 
-function buildPremiumPrompt(inputs = {}) {
+function buildSectionsPrompt(inputs = {}) {
   const summary = inputs?.summary || {};
+  const openingName = summary?.opening || 'Unknown opening';
+  const accLine = `Accuracy W ${fmtPercent(summary?.whiteAcc)} / B ${fmtPercent(summary?.blackAcc)} (avg CPL W ${fmt(summary?.avgCplW)} / B ${fmt(summary?.avgCplB)})`;
+  const turningPointLines = buildTurningPointHints(inputs?.moments).join('\n') || 'No big swings detected.';
+  const patternLines = buildPatternHintStrings(inputs?.moments).join('\n') || 'No recurring patterns detected.';
   const evalSummary = Array.isArray(inputs?.evalSummary) && inputs.evalSummary.length
     ? inputs.evalSummary.join('\n')
-    : 'No eval data provided.';
-  const momentHints = buildMomentHints(inputs?.moments);
+    : 'Eval data unavailable.';
   return [
-    'You are an advanced chess analysis generator. Produce premium-quality coach notes with these sections: Executive Summary, Opening Review, Middlegame Review, Endgame Review, Key Moments & Turning Points, Three Most Important Lessons.',
-    'Tone: human, instructive, confident. Explain WHY ideas succeed or fail. For mistakes mention intention, engine refutation, and lesson.',
-    'Use only plain English sentences. keyMoments and lessons must be arrays of concise statements (no numbering/symbols).',
-    'If a phase never occurred (e.g., no endgame), say so explicitly instead of inventing play.',
-    'Lean on the analysis hints (motifs, tacticSummary, king safety) when highlighting what mattered.',
-    `Metadata: Opening ${summary?.opening || 'Unknown'}, Accuracy W ${fmtPercent(summary?.whiteAcc)} / B ${fmtPercent(summary?.blackAcc)}, Avg CPL W ${fmt(summary?.avgCplW)} / B ${fmt(summary?.avgCplB)}, Result ${summary?.result || '*'}.`,
-    `PGN:\n${inputs?.pgn || '(PGN unavailable)'}`,
-    `Eval data:\n${evalSummary}`,
-    `Analysis hints:\n${momentHints}`,
-    FEW_SHOT_SNIPPET,
-    'Return ONLY JSON with the specified keys.',
+    `Game info: opening ${openingName}, result ${summary?.result || '*'}. ${accLine}`,
+    `Top turning points:\n${turningPointLines}`,
+    `Pattern summary:\n${patternLines}`,
+    `Eval notes:\n${evalSummary}`,
   ].join('\n\n');
 }
 
-const FEW_SHOT_SNIPPET = [
-  'Example Response:',
-  '{',
-  '  "executiveSummary": "You steered a Colle System, built a strong pawn chain, and won when a kingside tactic landed. Biggest chances missed: respecting forcing replies and activating rooks faster.",',
-  '  "openingReview": "Colle structures aim for e4 or a kingside squeeze. You achieved the classic setup but delayed the thematic e4 break, letting Black equalize.",',
-  '  "middlegameReview": "When the center locked, you launched the pawn storm at the right moment and kept pieces near the enemy king. Watch for loose pawns: one premature capture gave Black counterplay.",',
-  '  "endgameReview": "No pure endgame appeared—the tactic on move 28 settled the result while heavy pieces were still on.",',
-  '  "keyMoments": [',
-  '    "Move 14 (White Ne5) — correct reroute, highlighting the f7 weakness.",',
-  '    "Move 21 (Black ...g5) — allowed the h-file attack; best was ...c5 keeping the center closed.",',
-  '    "Move 28 (White Bxh7+) — decisive tactic that forced mate."',
-  '  ],',
-  '  "lessons": [',
-  '    "In system openings, execute the signature pawn break before allowing counterplay.",',
-  '    "Before pushing pawns near your king, verify your back rank and loose pieces.",',
-  '    "When a tactic appears, calculate the forcing line to the end instead of stopping halfway."',
-  '  ]',
-  '}',
-].join('\n');
+function buildTurningPointHints(moments) {
+  const picks = selectKeyMoments(moments).slice(0, 3);
+  return picks.map((moment) => {
+    const mover = moment.side === 'W' ? 'White' : 'Black';
+    const label = normalizeMomentLabel(moment.tag);
+    const reason = summarizeMoment(moment, mover);
+    return `Move ${moment.moveNo} (${mover} ${moment.san}, ${label}) — ${reason}`;
+  });
+}
+
+function summarizeMoment(moment, moverLabel) {
+  if (moment?.tacticSummary) return moment.tacticSummary;
+  if (moment?.positionSummary) return moment.positionSummary;
+  if (moment?.centerSummary) return moment.centerSummary;
+  return describeTagReason(moment?.tag, moment?.deltaCp, moment?.phase, moverLabel);
+}
+
+function buildPatternHintStrings(moments) {
+  return derivePatternInsights(moments).map((entry) => `Pattern: ${entry.pattern} → Fix: ${entry.fix}`);
+}
+
+function derivePatternInsights(moments) {
+  const list = safeMoments(moments);
+  const castleMove = { W: null, B: null };
+  const kingsidePushes = { W: 0, B: 0 };
+  const mistakes = { W: 0, B: 0 };
+  const tacticMotifs = { W: 0, B: 0 };
+  for (const moment of list) {
+    if (!moment) continue;
+    const side = moment.side === 'B' ? 'B' : 'W';
+    const san = String(moment.san || '');
+    if ((san === 'O-O' || san === 'O-O-O') && castleMove[side] == null) {
+      castleMove[side] = moment.moveNo;
+    }
+    if (!castleMove[side] && isKingWingPawnPush(san, side)) {
+      kingsidePushes[side]++;
+    }
+    const tag = String(moment.tag || '').toLowerCase();
+    if (tag.includes('blunder') || tag.includes('mistake')) mistakes[side] = (mistakes[side] || 0) + 1;
+    if (Array.isArray(moment.motifs) && moment.motifs.some((motif) => /capture|check|tactic/i.test(motif))) {
+      tacticMotifs[side] = (tacticMotifs[side] || 0) + 1;
+    }
+  }
+  const patterns = [];
+  if (!castleMove.W || castleMove.W > 12) {
+    patterns.push({
+      pattern: `White castled on move ${castleMove.W || 'never'}`,
+      fix: 'castle before the center explodes.',
+    });
+  }
+  if (!castleMove.B || castleMove.B > 12) {
+    patterns.push({
+      pattern: `Black castled on move ${castleMove.B || 'never'}`,
+      fix: 'finish king safety earlier.',
+    });
+  }
+  if (kingsidePushes.W >= 2) {
+    patterns.push({
+      pattern: `White pushed ${kingsidePushes.W} pawn(s) in front of the king before castling`,
+      fix: 'delay pawn storms until the king is tucked away.',
+    });
+  }
+  if (kingsidePushes.B >= 2) {
+    patterns.push({
+      pattern: `Black advanced ${kingsidePushes.B} king-side pawn(s) before castling`,
+      fix: 'keep the monarch sheltered before launching pawns.',
+    });
+  }
+  if (mistakes.W >= 2) {
+    patterns.push({
+      pattern: `White left ${mistakes.W} tactics on the board`,
+      fix: 'slow down and check forcing moves.',
+    });
+  }
+  if (mistakes.B >= 2) {
+    patterns.push({
+      pattern: `Black missed ${mistakes.B} tactics`,
+      fix: 'count captures before pushing pawns.',
+    });
+  }
+  if (!patterns.length) {
+    patterns.push({
+      pattern: 'Both players stayed solid',
+      fix: 'keep building on these fundamentals.',
+    });
+  }
+  return patterns.slice(0, 6);
+}
+
+function isKingWingPawnPush(san, side) {
+  const files = side === 'W' ? ['f', 'g', 'h'] : ['f', 'g', 'h'];
+  const match = san.match(/^([a-h])(x?[a-h][1-8]|[1-8])/i);
+  if (!match) return false;
+  const file = match[1].toLowerCase();
+  return files.includes(file);
+}
+
+function sentenceArray(text) {
+  return String(text || '')
+    .split(/(?<=[.!?])\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function clampSentences(text, max = 2) {
+  const sentences = sentenceArray(text);
+  return sentences.slice(0, max).join(' ').trim();
+}
+
+function countSentences(text) {
+  return sentenceArray(text).length;
+}
+
+function textHasReference(text, openingName) {
+  if (!text) return false;
+  if (/move\s+\d+/i.test(text)) return true;
+  if (openingName) {
+    const token = openingName.split(/\s+/)[0];
+    if (token && text.toLowerCase().includes(token.toLowerCase())) return true;
+  }
+  return false;
+}
+
+function validateSectionsPayload(payload, inputs) {
+  const summary = inputs?.summary || {};
+  if (!payload || typeof payload !== 'object') return { ok: false, reason: 'sections-not-object' };
+  const result = {
+    executive: { text: '' },
+    opening: { text: '' },
+    middlegame: { text: '' },
+    endgame: { text: '' },
+    keyMoments: { bullets: [] },
+    lessons: { bullets: [] },
+  };
+  const textFields = [
+    ['executive', payload?.executive?.text],
+    ['opening', payload?.opening?.text],
+    ['middlegame', payload?.middlegame?.text],
+    ['endgame', payload?.endgame?.text],
+  ];
+  for (const [key, raw] of textFields) {
+    const clamped = clampSentences(String(raw || ''), 2);
+    if (!clamped) return { ok: false, reason: `missing-${key}` };
+    if (countSentences(clamped) > 2) return { ok: false, reason: `${key}-sentence-limit` };
+    if (!textHasReference(clamped, summary?.opening)) return { ok: false, reason: `${key}-no-reference` };
+    result[key] = { text: clamped };
+  }
+  const keyBullets = Array.isArray(payload?.keyMoments?.bullets) ? payload.keyMoments.bullets.filter((b) => typeof b === 'string' && b.trim()) : [];
+  if (keyBullets.length !== 3) return { ok: false, reason: 'keymoments-length' };
+  if (keyBullets.some((b) => !/^Move\s+\d+/i.test(b) || !/Habit:/i.test(b))) {
+    return { ok: false, reason: 'keymoments-format' };
+  }
+  result.keyMoments = { bullets: keyBullets.map((b) => clampSentences(b, 2)) };
+  const lessonBullets = Array.isArray(payload?.lessons?.bullets) ? payload.lessons.bullets.filter((b) => typeof b === 'string' && b.trim()) : [];
+  if (lessonBullets.length !== 3) return { ok: false, reason: 'lessons-length' };
+  if (lessonBullets.some((b) => !/Pattern:/i.test(b) || !/Fix:/i.test(b))) {
+    return { ok: false, reason: 'lessons-format' };
+  }
+  result.lessons = { bullets: lessonBullets.map((b) => clampSentences(b, 2)) };
+  return { ok: true, sections: result };
+}
+
+function buildFallbackSections(inputs) {
+  const summary = inputs?.summary || {};
+  const openingName = summary?.opening || 'the opening phase';
+  const moments = safeMoments(inputs?.moments);
+  const turning = selectKeyMoments(moments).slice(0, 3);
+  const heuristic = heuristicSections(inputs);
+  const patterns = derivePatternInsights(moments);
+  const totalMoves = Math.max(1, Math.round((inputs?.totalPlies || moments.length) / 2));
+  return {
+    executive: { text: fallbackExecutiveText(turning[0], openingName) },
+    opening: { text: fallbackOpeningText(openingName, turning[0], heuristic.openingReview) },
+    middlegame: { text: fallbackPhaseText(turning[1] || turning[0], heuristic.middlegameReview, 'middlegame') },
+    endgame: { text: fallbackEndgameText(turning[2], heuristic.endgameReview, totalMoves) },
+    keyMoments: { bullets: buildFallbackKeyBullets(turning, heuristic.keyMoments) },
+    lessons: { bullets: buildFallbackLessons(patterns, heuristic.lessons) },
+  };
+}
+
+function fallbackExecutiveText(turn, openingName) {
+  if (turn) {
+    const mover = turn.side === 'W' ? 'White' : 'Black';
+    const desc = sanitizeDescription(summarizeMoment(turn, mover));
+    const habit = habitForTag(turn.tag);
+    return clampSentences(`Move ${turn.moveNo} (${mover} ${turn.san}) shaped the result by ${desc}. Next time, ${habit}`, 2);
+  }
+  return clampSentences(`Opening ${openingName} stayed balanced through move 10. Next time, focus on controlling the center and castling on time.`, 2);
+}
+
+function fallbackOpeningText(openingName, turn, fallbackLine) {
+  if (turn && turn.moveNo <= 12) {
+    const mover = turn.side === 'W' ? 'White' : 'Black';
+    const desc = sanitizeDescription(summarizeMoment(turn, mover));
+    return clampSentences(`Opening ${openingName} flipped at move ${turn.moveNo} when ${mover} played ${turn.san} and ${desc}. Review that idea for next time.`, 2);
+  }
+  return clampSentences(`${openingName} followed classical development. Next time, ${fallbackLine || 'aim for quick king safety and central control.'}`, 2);
+}
+
+function fallbackPhaseText(turn, fallbackLine, phaseLabel) {
+  if (turn) {
+    const mover = turn.side === 'W' ? 'White' : 'Black';
+    const desc = sanitizeDescription(summarizeMoment(turn, mover));
+    const habit = habitForTag(turn.tag);
+    return clampSentences(`Move ${turn.moveNo} in the ${phaseLabel} let ${mover.toLowerCase()} ${desc}. Next time, ${habit}`, 2);
+  }
+  return clampSentences(`${fallbackLine || `No decisive ${phaseLabel} battle appeared.`} Next time, keep pressure on the critical squares.`, 2);
+}
+
+function fallbackEndgameText(turn, fallbackLine, totalMoves) {
+  if (turn && turn.moveNo > Math.max(20, Math.round(totalMoves * 0.6))) {
+    const mover = turn.side === 'W' ? 'White' : 'Black';
+    const desc = sanitizeDescription(summarizeMoment(turn, mover));
+    const habit = habitForTag(turn.tag);
+    return clampSentences(`Move ${turn.moveNo} decided the late phase as ${mover.toLowerCase()} ${desc}. Finish development earlier so the endgame is smoother.`, 2);
+  }
+  return clampSentences(`No real endgame emerged before move ${totalMoves}. Next time, aim to simplify only after improving king activity.`, 2);
+}
+
+function buildFallbackKeyBullets(turning, heuristicList = []) {
+  const bullets = [];
+  for (const moment of turning) {
+    bullets.push(formatKeyMomentBullet(moment));
+    if (bullets.length >= 3) break;
+  }
+  if (bullets.length < 3) {
+    for (const line of heuristicList) {
+      if (!line) continue;
+      const match = line.match(/move\s+(\d+)/i);
+      const moveNo = match ? match[1] : String(10 + bullets.length);
+      bullets.push(`Move ${moveNo}: ${sanitizeDescription(line)} → Habit: stay alert for forcing replies.`);
+      if (bullets.length >= 3) break;
+    }
+  }
+  while (bullets.length < 3) {
+    const moveNo = 12 + bullets.length * 2;
+    bullets.push(`Move ${moveNo}: keep pieces coordinated → Habit: double-check tactics before pushing pawns.`);
+  }
+  return bullets.slice(0, 3).map((line) => clampSentences(line, 2));
+}
+
+function formatKeyMomentBullet(moment) {
+  const mover = moment.side === 'W' ? 'White' : 'Black';
+  const desc = sanitizeDescription(summarizeMoment(moment, mover));
+  const habit = habitForTag(moment.tag);
+  return `Move ${moment.moveNo}: ${desc} → Habit: ${habit}`;
+}
+
+function buildFallbackLessons(patterns, heuristicLessons = []) {
+  const bullets = patterns.slice(0, 3).map((p) => `Pattern: ${p.pattern} → Fix: ${p.fix}`);
+  if (bullets.length < 3 && Array.isArray(heuristicLessons)) {
+    for (const lesson of heuristicLessons) {
+      if (!lesson) continue;
+      bullets.push(`Pattern: ${lesson} → Fix: apply that plan earlier.`);
+      if (bullets.length >= 3) break;
+    }
+  }
+  while (bullets.length < 3) {
+    bullets.push('Pattern: Missed chances in quiet positions → Fix: improve piece coordination before pawn storms.');
+  }
+  return bullets.slice(0, 3).map((line) => clampSentences(line, 2));
+}
+
+function sanitizeDescription(text) {
+  return String(text || '').replace(/\d+\s*cp/gi, 'the balance').replace(/\s+/g, ' ').trim();
+}
+
+function habitForTag(tag) {
+  const low = String(tag || '').toLowerCase();
+  if (low.includes('blunder')) return 'double-check hanging pieces before committing.';
+  if (low.includes('mistake')) return 'slow down and count forcing moves.';
+  if (low.includes('inacc')) return 'improve the worst piece before pawn pushes.';
+  if (low.includes('book')) return 'follow the plan and be ready for pawn breaks.';
+  if (low.includes('best') || low.includes('excellent')) return 'keep trusting the plan when the pieces coordinate.';
+  return 'stay mindful of both threats and your own plans.';
+}
 
 function buildMomentHints(moments) {
   const lines = safeMoments(moments)
@@ -687,7 +1021,7 @@ async function callModelSections({ model, prompt }) {
     return await callModelJson({
       model,
       prompt,
-      systemPrompt: buildSystemPrompt(),
+      systemPrompt: SECTION_SYSTEM_PROMPT,
       numPredict: Math.max(800, TOKENS_PER_ITEM * 4),
     });
   } catch (err) {
@@ -790,16 +1124,6 @@ async function ensureModelAvailable(model) {
 }
 
 /* -------------------------------- Prompt ---------------------------------- */
-
-function buildSystemPrompt() {
-  return [
-    'You are a titled-coach style chess analyst. Produce confident, human explanations (no special symbols).',
-    'Explain why moves were good or bad, the player intention, the engine refutation, and the principle to remember.',
-    'If a phase never occurred, explicitly say so instead of inventing narrative.',
-    'Return a SINGLE JSON object with keys: executiveSummary, openingReview, middlegameReview, endgameReview, keyMoments, lessons.',
-    'keyMoments and lessons must be arrays of concise English strings (no numbering or symbols).',
-  ].join(' ');
-}
 
 
 function normalizeItems(items, batch) {
@@ -922,29 +1246,21 @@ function attachStoryNotes(moveNotes, summary, moments) {
 
 async function generateNotes(inputs) {
   const model = inputs?.model || DEFAULT_MODEL;
-  const prompt = buildPremiumPrompt(inputs);
+  const prompt = buildSectionsPrompt(inputs);
   if (COACH_DEBUG) {
-    console.log('[coach] generating premium notes with model', model);
+    console.log('[coach] generating coach sections with model', model);
   }
-  const sections = await callModelSections({ model, prompt });
-  const fallbackSections = heuristicSections(inputs);
+  const rawSections = prompt ? await callModelSections({ model, prompt }) : null;
+  const normalized = normalizeSections(rawSections, inputs);
   const moves = buildLegacyMoveNotes(inputs?.moments);
   const generatedMomentNotes = await generateMomentNotes(inputs, model);
   const momentNotes = generatedMomentNotes.length ? generatedMomentNotes : fallbackMomentNotes(inputs?.moments);
-  if (sections && sections.executiveSummary) {
-    return {
-      sections: normalizeSections(sections, inputs),
-      moves,
-      momentNotes,
-      offline: false,
-    };
-  }
   return {
-    sections: fallbackSections,
+    sections: normalized.sections,
     moves,
     momentNotes,
     offline: false,
-    fallback: true,
+    fallback: normalized.fallback,
   };
 }
 
@@ -968,7 +1284,7 @@ function registerCoachIpc() {
       if (!available) {
         console.error(`[coach] model not available: ${model}. Install with: ollama pull ${model}`);
         return {
-          sections: heuristicSections(inputs),
+          sections: buildFallbackSections(inputs),
           moves: buildLegacyMoveNotes(inputs?.moments),
           momentNotes: fallbackMomentNotes(inputs?.moments),
           offline: false,
@@ -980,7 +1296,7 @@ function registerCoachIpc() {
       const res = await generateNotes({ ...inputs, model });
       if (res?.sections) return res;
       return {
-        sections: heuristicSections(inputs),
+        sections: buildFallbackSections(inputs),
         moves: buildLegacyMoveNotes(inputs?.moments),
         momentNotes: fallbackMomentNotes(inputs?.moments),
         offline: false,
@@ -991,7 +1307,7 @@ function registerCoachIpc() {
     } catch (e) {
       console.error('[coach] error:', e && (e.stack || e.message || e));
       return {
-        sections: heuristicSections(payload?.inputs),
+        sections: buildFallbackSections(payload?.inputs),
         moves: buildLegacyMoveNotes(payload?.inputs?.moments),
         momentNotes: fallbackMomentNotes(payload?.inputs?.moments),
         offline: false,
