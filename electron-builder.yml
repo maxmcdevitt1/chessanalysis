@@ -1,6 +1,6 @@
 appId: com.maxmcdevitt.chessanalysis
 productName: chessanalysis
-publish: never
+- run: npm run dist -- --mac dmg --publish=never
 
 directories:
   output: dist-electron
