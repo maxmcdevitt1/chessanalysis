@@ -32,15 +32,15 @@ jobs:
       # ---- Build per OS ----
       - name: Build Windows (NSIS + portable)
         if: matrix.os == 'windows-latest'
-        run: npm run dist -- --win nsis portable
+        run: npm run dist -- --win nsis portable --publish=never
 
       - name: Build macOS (DMG)
         if: matrix.os == 'macos-latest'
-        run: npm run dist -- --mac dmg
+        run: npm run dist -- --mac dmg --publish=never
 
       - name: Build Linux (AppImage + deb)
         if: matrix.os == 'ubuntu-latest'
-        run: npm run dist -- --linux appimage deb
+        run: npm run dist -- --linux appimage deb --publish=never
 
       # ---- Upload build outputs as artifacts (internal to Actions) ----
       - name: Upload dist-electron folder
