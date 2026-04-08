@@ -1,0 +1,825 @@
+{
+  "openings": [
+    {
+      "name": "Ruy Lopez",
+      "eco": "C60",
+      "side": "white",
+      "weight": 0.10,
+      "lines": [
+        {
+          "variation": "Morphy Defense (Main Line)",
+          "weight": 0.6,
+          "moves": [
+            "e4", "e5",
+            "Nf3", "Nc6",
+            "Bb5", "a6",
+            "Ba4", "Nf6",
+            "O-O", "Be7",
+            "Re1", "b5",
+            "Bb3", "d6"
+          ]
+        },
+        {
+          "variation": "Exchange Variation",
+          "weight": 0.4,
+          "moves": [
+            "e4", "e5",
+            "Nf3", "Nc6",
+            "Bb5", "a6",
+            "Bxc6", "dxc6",
+            "O-O", "f6",
+            "d4", "exd4",
+            "Qxd4", "Qxd4"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Italian Game",
+      "eco": "C50",
+      "side": "white",
+      "weight": 0.09,
+      "lines": [
+        {
+          "variation": "Giuoco Pianissimo",
+          "weight": 0.5,
+          "moves": [
+            "e4", "e5",
+            "Nf3", "Nc6",
+            "Bc4", "Bc5",
+            "c3", "Nf6",
+            "d3", "d6",
+            "O-O", "O-O",
+            "Re1", "a5"
+          ]
+        },
+        {
+          "variation": "Two Knights Defense (Quiet Line)",
+          "weight": 0.25,
+          "moves": [
+            "e4", "e5",
+            "Nf3", "Nc6",
+            "Bc4", "Nf6",
+            "d3", "Be7",
+            "O-O", "O-O",
+            "Re1", "d6",
+            "c3", "a6"
+          ]
+        },
+        {
+          "variation": "Evans Gambit (Simple)",
+          "weight": 0.25,
+          "moves": [
+            "e4", "e5",
+            "Nf3", "Nc6",
+            "Bc4", "Bc5",
+            "b4", "Bxb4",
+            "c3", "Ba5",
+            "d4", "exd4",
+            "O-O", "dxc3"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Scotch Game",
+      "eco": "C45",
+      "side": "white",
+      "weight": 0.07,
+      "lines": [
+        {
+          "variation": "Classical Scotch (4...Nf6 5.Nxc6)",
+          "weight": 0.45,
+          "moves": [
+            "e4", "e5",
+            "Nf3", "Nc6",
+            "d4", "exd4",
+            "Nxd4", "Nf6",
+            "Nxc6", "bxc6",
+            "Bd3", "d5",
+            "exd5", "cxd5"
+          ]
+        },
+        {
+          "variation": "Scotch with 4...Bc5",
+          "weight": 0.3,
+          "moves": [
+            "e4", "e5",
+            "Nf3", "Nc6",
+            "d4", "exd4",
+            "Nxd4", "Bc5",
+            "Be3", "Qf6",
+            "c3", "Nge7",
+            "Be2", "O-O"
+          ]
+        },
+        {
+          "variation": "Scotch Four Knights",
+          "weight": 0.25,
+          "moves": [
+            "e4", "e5",
+            "Nf3", "Nc6",
+            "Nc3", "Nf6",
+            "d4", "exd4",
+            "Nxd4", "Bb4",
+            "Nxc6", "bxc6",
+            "Bd3", "O-O"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Four Knights Game",
+      "eco": "C48",
+      "side": "white",
+      "weight": 0.04,
+      "lines": [
+        {
+          "variation": "Classical",
+          "weight": 0.7,
+          "moves": [
+            "e4", "e5",
+            "Nf3", "Nc6",
+            "Nc3", "Nf6",
+            "Bb5", "Bb4",
+            "O-O", "O-O",
+            "d3", "d6",
+            "Bg5", "Bxc3"
+          ]
+        },
+        {
+          "variation": "Italian Four Knights",
+          "weight": 0.3,
+          "moves": [
+            "e4", "e5",
+            "Nf3", "Nc6",
+            "Nc3", "Nf6",
+            "Bc4", "Bc5",
+            "d3", "d6",
+            "Bg5", "h6",
+            "Bh4", "Be6"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Vienna Game",
+      "eco": "C28",
+      "side": "white",
+      "weight": 0.04,
+      "lines": [
+        {
+          "variation": "Vienna with Nf3",
+          "weight": 0.6,
+          "moves": [
+            "e4", "e5",
+            "Nc3", "Nf6",
+            "Nf3", "Nc6",
+            "Bc4", "Bc5",
+            "d3", "d6",
+            "Bg5", "h6",
+            "Bh4", "Be6"
+          ]
+        },
+        {
+          "variation": "Vienna Gambit (Mild)",
+          "weight": 0.4,
+          "moves": [
+            "e4", "e5",
+            "Nc3", "Nf6",
+            "f4", "d5",
+            "fxe5", "Nxe4",
+            "Nf3", "Be7",
+            "d4", "O-O"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "King's Gambit",
+      "eco": "C30",
+      "side": "white",
+      "weight": 0.03,
+      "lines": [
+        {
+          "variation": "King's Knight Gambit (Classical)",
+          "weight": 0.7,
+          "moves": [
+            "e4", "e5",
+            "f4", "exf4",
+            "Nf3", "g5",
+            "Bc4", "Bg7",
+            "d4", "d6",
+            "O-O", "h6"
+          ]
+        },
+        {
+          "variation": "King's Gambit Declined (3.Bc4)",
+          "weight": 0.3,
+          "moves": [
+            "e4", "e5",
+            "f4", "Bc5",
+            "Nf3", "d6",
+            "c3", "Nf6",
+            "d4", "Bb6"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Queen's Gambit Declined",
+      "eco": "D06",
+      "side": "white",
+      "weight": 0.09,
+      "lines": [
+        {
+          "variation": "Orthodox Defense",
+          "weight": 0.6,
+          "moves": [
+            "d4", "d5",
+            "c4", "e6",
+            "Nc3", "Nf6",
+            "Bg5", "Be7",
+            "e3", "O-O",
+            "Nf3", "Nbd7"
+          ]
+        },
+        {
+          "variation": "Exchange Variation",
+          "weight": 0.4,
+          "moves": [
+            "d4", "d5",
+            "c4", "e6",
+            "Nc3", "Nf6",
+            "cxd5", "exd5",
+            "Bg5", "Be7",
+            "e3", "O-O"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Queen's Gambit Accepted",
+      "eco": "D20",
+      "side": "white",
+      "weight": 0.04,
+      "lines": [
+        {
+          "variation": "Main Line",
+          "weight": 1.0,
+          "moves": [
+            "d4", "d5",
+            "c4", "dxc4",
+            "Nf3", "Nf6",
+            "e3", "e6",
+            "Bxc4", "c5",
+            "O-O", "a6"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "London System",
+      "eco": "D02",
+      "side": "white",
+      "weight": 0.08,
+      "lines": [
+        {
+          "variation": "London vs ...d5",
+          "weight": 0.6,
+          "moves": [
+            "d4", "d5",
+            "Bf4", "Nf6",
+            "e3", "e6",
+            "Nf3", "c5",
+            "c3", "Nc6",
+            "Nbd2", "Bd6",
+            "Bg3", "O-O"
+          ]
+        },
+        {
+          "variation": "London vs King's Indian Setup",
+          "weight": 0.4,
+          "moves": [
+            "d4", "Nf6",
+            "Nf3", "g6",
+            "Bf4", "Bg7",
+            "e3", "O-O",
+            "h3", "d6",
+            "Be2", "Nbd7"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Colle System",
+      "eco": "D05",
+      "side": "white",
+      "weight": 0.04,
+      "lines": [
+        {
+          "variation": "Classical Colle",
+          "weight": 1.0,
+          "moves": [
+            "d4", "d5",
+            "Nf3", "Nf6",
+            "e3", "e6",
+            "Bd3", "c5",
+            "c3", "Nc6",
+            "Nbd2", "Bd6",
+            "O-O", "O-O"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Trompowsky Attack",
+      "eco": "A45",
+      "side": "white",
+      "weight": 0.03,
+      "lines": [
+        {
+          "variation": "Main Line (e6)",
+          "weight": 1.0,
+          "moves": [
+            "d4", "Nf6",
+            "Bg5", "e6",
+            "e4", "h6",
+            "Bxf6", "Qxf6",
+            "Nf3", "d5",
+            "Nbd2", "c5"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Torre Attack",
+      "eco": "A46",
+      "side": "white",
+      "weight": 0.03,
+      "lines": [
+        {
+          "variation": "Torre vs ...e6",
+          "weight": 0.6,
+          "moves": [
+            "d4", "Nf6",
+            "Nf3", "e6",
+            "Bg5", "Be7",
+            "e3", "O-O",
+            "Bd3", "d5",
+            "Nbd2", "Nbd7"
+          ]
+        },
+        {
+          "variation": "Torre vs ...g6",
+          "weight": 0.4,
+          "moves": [
+            "d4", "Nf6",
+            "Nf3", "g6",
+            "Bg5", "Bg7",
+            "Nbd2", "O-O",
+            "e4", "d6",
+            "c3", "Nbd7"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Barry Attack",
+      "eco": "D00",
+      "side": "white",
+      "weight": 0.03,
+      "lines": [
+        {
+          "variation": "Barry vs ...d5 ...Nf6",
+          "weight": 1.0,
+          "moves": [
+            "d4", "Nf6",
+            "Nf3", "d5",
+            "Nc3", "e6",
+            "Bg5", "Be7",
+            "e3", "O-O",
+            "Bd3", "c5"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "English Opening",
+      "eco": "A13",
+      "side": "white",
+      "weight": 0.06,
+      "lines": [
+        {
+          "variation": "Botvinnik Setup (Beginner)",
+          "weight": 0.6,
+          "moves": [
+            "c4", "e5",
+            "Nc3", "Nf6",
+            "g3", "Bc5",
+            "Bg2", "O-O",
+            "Nge2", "Re8",
+            "O-O", "c6"
+          ]
+        },
+        {
+          "variation": "Symmetrical English",
+          "weight": 0.4,
+          "moves": [
+            "c4", "c5",
+            "Nf3", "Nf6",
+            "d4", "cxd4",
+            "Nxd4", "e6",
+            "Nc3", "a6",
+            "g3", "Qc7"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Catalan Opening",
+      "eco": "E01",
+      "side": "white",
+      "weight": 0.04,
+      "lines": [
+        {
+          "variation": "Closed Catalan",
+          "weight": 0.7,
+          "moves": [
+            "d4", "Nf6",
+            "c4", "e6",
+            "g3", "d5",
+            "Bg2", "Be7",
+            "Nf3", "O-O",
+            "O-O", "Nbd7"
+          ]
+        },
+        {
+          "variation": "Open Catalan",
+          "weight": 0.3,
+          "moves": [
+            "d4", "Nf6",
+            "c4", "e6",
+            "g3", "d5",
+            "Bg2", "dxc4",
+            "Nf3", "a6",
+            "O-O", "Nc6"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Caro-Kann Defense",
+      "eco": "B12",
+      "side": "black",
+      "weight": 0.07,
+      "lines": [
+        {
+          "variation": "Classical (4.Nxe4 Bf5)",
+          "weight": 0.6,
+          "moves": [
+            "e4", "c6",
+            "d4", "d5",
+            "Nc3", "dxe4",
+            "Nxe4", "Bf5",
+            "Ng3", "Bg6",
+            "Nf3", "Nd7",
+            "h4", "h6"
+          ]
+        },
+        {
+          "variation": "Advance Variation",
+          "weight": 0.4,
+          "moves": [
+            "e4", "c6",
+            "d4", "d5",
+            "e5", "Bf5",
+            "Nf3", "e6",
+            "Be2", "Nd7",
+            "O-O", "Ne7"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "French Defense",
+      "eco": "C00",
+      "side": "black",
+      "weight": 0.06,
+      "lines": [
+        {
+          "variation": "Winawer (Simplified)",
+          "weight": 0.5,
+          "moves": [
+            "e4", "e6",
+            "d4", "d5",
+            "Nc3", "Bb4",
+            "e5", "c5",
+            "a3", "Bxc3+",
+            "bxc3", "Ne7",
+            "Nf3", "Nbc6"
+          ]
+        },
+        {
+          "variation": "Exchange Variation",
+          "weight": 0.5,
+          "moves": [
+            "e4", "e6",
+            "d4", "d5",
+            "exd5", "exd5",
+            "Nf3", "Nf6",
+            "Bd3", "Bd6",
+            "O-O", "O-O"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Sicilian Defense",
+      "eco": "B20",
+      "side": "black",
+      "weight": 0.12,
+      "lines": [
+        {
+          "variation": "Open Sicilian (Najdorf-style)",
+          "weight": 0.35,
+          "moves": [
+            "e4", "c5",
+            "Nf3", "d6",
+            "d4", "cxd4",
+            "Nxd4", "Nf6",
+            "Nc3", "a6",
+            "Be2", "e5",
+            "Nb3", "Be6"
+          ]
+        },
+        {
+          "variation": "Classical / Scheveningen",
+          "weight": 0.25,
+          "moves": [
+            "e4", "c5",
+            "Nf3", "e6",
+            "d4", "cxd4",
+            "Nxd4", "Nc6",
+            "Nc3", "Qc7",
+            "Be2", "a6",
+            "O-O", "Nf6"
+          ]
+        },
+        {
+          "variation": "Closed Sicilian",
+          "weight": 0.2,
+          "moves": [
+            "e4", "c5",
+            "Nc3", "Nc6",
+            "g3", "g6",
+            "Bg2", "Bg7",
+            "d3", "d6",
+            "Be3", "e5"
+          ]
+        },
+        {
+          "variation": "Alapin (c3 Sicilian)",
+          "weight": 0.1,
+          "moves": [
+            "e4", "c5",
+            "c3", "d5",
+            "exd5", "Qxd5",
+            "d4", "Nf6",
+            "Nf3", "Bg4",
+            "Be2", "e6"
+          ]
+        },
+        {
+          "variation": "Grand Prix Attack",
+          "weight": 0.1,
+          "moves": [
+            "e4", "c5",
+            "Nc3", "Nc6",
+            "f4", "g6",
+            "Nf3", "Bg7",
+            "Bb5", "Nd4",
+            "O-O", "a6"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Scandinavian Defense",
+      "eco": "B01",
+      "side": "black",
+      "weight": 0.04,
+      "lines": [
+        {
+          "variation": "Main Line (2...Qxd5 3.Nc3 Qa5)",
+          "weight": 1.0,
+          "moves": [
+            "e4", "d5",
+            "exd5", "Qxd5",
+            "Nc3", "Qa5",
+            "d4", "c6",
+            "Nf3", "Nf6",
+            "Bd3", "Bg4"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Slav Defense",
+      "eco": "D10",
+      "side": "black",
+      "weight": 0.05,
+      "lines": [
+        {
+          "variation": "Slav Main Line",
+          "weight": 1.0,
+          "moves": [
+            "d4", "d5",
+            "c4", "c6",
+            "Nf3", "Nf6",
+            "Nc3", "dxc4",
+            "a4", "Bf5",
+            "e3", "e6"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Pirc Defense",
+      "eco": "B07",
+      "side": "black",
+      "weight": 0.03,
+      "lines": [
+        {
+          "variation": "Classical System",
+          "weight": 1.0,
+          "moves": [
+            "e4", "d6",
+            "d4", "Nf6",
+            "Nc3", "g6",
+            "Nf3", "Bg7",
+            "Be2", "O-O",
+            "O-O", "Nc6"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Modern Defense",
+      "eco": "B06",
+      "side": "black",
+      "weight": 0.02,
+      "lines": [
+        {
+          "variation": "Modern vs e4",
+          "weight": 1.0,
+          "moves": [
+            "e4", "g6",
+            "d4", "Bg7",
+            "Nc3", "d6",
+            "Nf3", "Nf6",
+            "Be2", "O-O",
+            "O-O", "Nc6"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "King's Indian Defense",
+      "eco": "E60",
+      "side": "black",
+      "weight": 0.05,
+      "lines": [
+        {
+          "variation": "Classical King's Indian",
+          "weight": 1.0,
+          "moves": [
+            "d4", "Nf6",
+            "c4", "g6",
+            "Nc3", "Bg7",
+            "e4", "d6",
+            "Nf3", "O-O",
+            "Be2", "e5"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Philidor Defense",
+      "eco": "C41",
+      "side": "black",
+      "weight": 0.04,
+      "lines": [
+        {
+          "variation": "Antoshin-style (Beginner-safe)",
+          "weight": 1.0,
+          "moves": [
+            "e4", "e5",
+            "Nf3", "d6",
+            "d4", "Nf6",
+            "Nc3", "Nbd7",
+            "Bc4", "Be7",
+            "O-O", "O-O"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Petrov Defense",
+      "eco": "C42",
+      "side": "black",
+      "weight": 0.05,
+      "lines": [
+        {
+          "variation": "Classical 3.Nxe5 d6",
+          "weight": 0.7,
+          "moves": [
+            "e4", "e5",
+            "Nf3", "Nf6",
+            "Nxe5", "d6",
+            "Nf3", "Nxe4",
+            "d4", "d5",
+            "Bd3", "Be7"
+          ]
+        },
+        {
+          "variation": "Petrov 3.d4 exd4",
+          "weight": 0.3,
+          "moves": [
+            "e4", "e5",
+            "Nf3", "Nf6",
+            "d4", "exd4",
+            "e5", "Ne4",
+            "Qxd4", "d5",
+            "exd6", "Qxd6"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Alekhine Defense",
+      "eco": "B02",
+      "side": "black",
+      "weight": 0.03,
+      "lines": [
+        {
+          "variation": "Four Pawns Attack (Simplified)",
+          "weight": 0.5,
+          "moves": [
+            "e4", "Nf6",
+            "e5", "Nd5",
+            "d4", "d6",
+            "c4", "Nb6",
+            "f4", "dxe5",
+            "fxe5", "Nc6"
+          ]
+        },
+        {
+          "variation": "Exchange / Classical",
+          "weight": 0.5,
+          "moves": [
+            "e4", "Nf6",
+            "e5", "Nd5",
+            "d4", "d6",
+            "Nf3", "dxe5",
+            "Nxe5", "Nd7",
+            "Nf3", "e6"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Dutch Defense",
+      "eco": "A80",
+      "side": "black",
+      "weight": 0.04,
+      "lines": [
+        {
+          "variation": "Classical Dutch vs 2.g3",
+          "weight": 0.6,
+          "moves": [
+            "d4", "f5",
+            "g3", "Nf6",
+            "Bg2", "e6",
+            "Nf3", "Be7",
+            "O-O", "O-O",
+            "c4", "d6"
+          ]
+        },
+        {
+          "variation": "Stonewall Dutch",
+          "weight": 0.4,
+          "moves": [
+            "d4", "f5",
+            "c4", "e6",
+            "Nc3", "d5",
+            "Nf3", "c6",
+            "Bf4", "Nf6",
+            "e3", "Bd6"
+          ]
+        }
+      ]
+    }
+  ]
+}
+
