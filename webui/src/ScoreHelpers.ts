@@ -8,38 +8,44 @@ export type UciScore = { type: 'cp' | 'mate'; value: number };
 export function cpFromScore(score: UciScore | null | undefined): number | null {
   if (!score || typeof score.value !== 'number') return null;
   if (score.type === 'cp') {
-    // Clamp to something sane; avoid runaway but keep large swings visible.
     return Math.max(-4000, Math.min(4000, score.value));
   }
-  // Map mate distance to large cp; closer mates get larger magnitude.
-  // Sign = positive if mate for mover, negative if getting mated.
   const sign = score.value >= 0 ? 1 : -1;
-  const cp = 10000 - Math.min(99, Math.abs(score.value)) * 100; // mate in 1 ≈ 9900
+  const cp = 10000 - Math.min(99, Math.abs(score.value)) * 100;
   return sign * cp;
 }
 
-/** Centipawn loss for a half-move: how much worse than best for the mover. */
+/** Centipawn loss for a half-move using White-POV values. */
+export function cpLossWhitePov(
+  cpBeforeWhite: number,
+  cpAfterWhite: number,
+  side: 'W' | 'B'
+): number {
+  if (side === 'W') return Math.max(0, cpBeforeWhite - cpAfterWhite);
+  return Math.max(0, cpAfterWhite - cpBeforeWhite);
+}
+
+/** @deprecated Use cpLossWhitePov instead. */
 export function cpLossForMoveSideAware(
   bestBefore: UciScore | null | undefined,
-  // afterScore should be opponent POV (side to move after the move).
   afterScore: UciScore | null | undefined,
-  mover: 'W' | 'B'
+  _mover: 'W' | 'B'
 ): number | null {
   const b = cpFromScore(bestBefore);
   const aRaw = cpFromScore(afterScore);
   if (b == null || aRaw == null) return null;
-  const a = -aRaw; // flip POV after the move to keep mover POV
+  const a = -aRaw;
   return Math.max(0, b - a);
 }
 
 /** Classify a single move by its centipawn loss (mover POV). */
 export function classifyLossCp(lossCp: number): 'best'|'good'|'inaccuracy'|'mistake'|'blunder' {
   const l = Math.abs(lossCp | 0);
-  if (l >= 100) return 'blunder';
-  if (l >= 50)  return 'mistake';
-  if (l >= 21)  return 'inaccuracy';
-  if (l >= 6)   return 'good';
-  return 'best';  // ≤ 5 cp
+  if (l >= 300) return 'blunder';
+  if (l >= 100)  return 'mistake';
+  if (l >= 50)  return 'inaccuracy';
+  if (l >= 30)   return 'good';
+  return 'best';
 }
 
 export type QualityTally = {
@@ -90,15 +96,32 @@ export function avgCplPerSide(halfMoves: Array<{
   };
 }
 
-// -------------------------- Accuracy & ELO (steeper) --------------------------
+// -------------------------------- Win-chances accuracy --------------------------------
 
 /**
- * Accuracy curve tuned to match the latest Lichess samples (≈91 ACPL → 70%,
- * ≈94 ACPL → 69%).  These anchors keep higher ACPL games from collapsing into
- * the 50s while still rewarding sub-50 ACPL performance.
+ * Win-chance percentage in (0,100) for a White-POV centipawn score.
+ * Matches the Lichess formula: wc = 50 + 50 * (2/(1+exp(-0.00368208*cp)) - 1)
  */
-const LOGISTIC_A = 163;   // derived from solving the 91/70 constraint pair
-const LOGISTIC_B = 1.45;  // steeper drop so 70% occurs around 90 ACPL
+export function winChancesPct(cp: number): number {
+  return 100 / (1 + Math.exp(-0.00368208 * cp));
+}
+
+/**
+ * Per-move accuracy (0–100) using win-chance loss.
+ * Uses Lichess-derived formula: 103.1668 * exp(-0.04354 * wcLoss) - 3.167
+ * Both cpBeforeWhite and cpAfterWhite are White-POV centipawns.
+ */
+export function moveWinAccuracy(cpBeforeWhite: number, cpAfterWhite: number, side: 'W' | 'B'): number {
+  const before = side === 'W' ? cpBeforeWhite : -cpBeforeWhite;
+  const after  = side === 'W' ? cpAfterWhite  : -cpAfterWhite;
+  const wcLoss = Math.max(0, winChancesPct(before) - winChancesPct(after));
+  return Math.max(0, Math.min(100, 103.1668 * Math.exp(-0.04354 * wcLoss) - 3.167));
+}
+
+// -------------------------- Accuracy & ELO (steeper) --------------------------
+
+const LOGISTIC_A = 163;
+const LOGISTIC_B = 1.45;
 
 export function accuracyFromAvgCpl(acpl: number | null): number | null {
   if (acpl == null || !isFinite(acpl)) return null;
@@ -154,25 +177,25 @@ export function acplBandForElo(elo: number): AcplBand | null {
 /** Optional: CPL → qualitative tag aligned with stricter accuracy. */
 export function tagFromLoss(lossCp: number): 'Best' | 'Good' | 'Mistake' | 'Blunder' {
   if (lossCp <= 10) return 'Best';
-  if (lossCp <= 45) return 'Good';       // harsher: flag middling drops sooner
+  if (lossCp <= 45) return 'Good';
   if (lossCp <= 90) return 'Mistake';
   return 'Blunder';
 }
 
 // Piecewise ACPL→ELO anchors (steeper)
 const ACPL_ELO_TABLE: Array<[number, number]> = [
-  [5, 2750],   // <5 → GM / engine
-  [10, 2450],  // 10 → 2300–2600
-  [20, 2100],  // 20 → 2000–2200
-  [35, 1875],  // 35 → 1800–1950
-  [50, 1675],  // 50 → 1600–1750
-  [70, 1475],  // 70 → 1400–1550
-  [90, 1300],  // 90 → 1200–1400
-  [120, 1100], // 120 → 1000–1200
-  [150, 900],  // 150 → 800–1000
-  [200, 700],  // 200 → 600–800
-  [250, 500],  // 250 → 400–600
-  [300, 250],  // 300+ → 100–400
+  [5, 2750],
+  [10, 2450],
+  [20, 2100],
+  [35, 1875],
+  [50, 1675],
+  [70, 1475],
+  [90, 1300],
+  [120, 1100],
+  [150, 900],
+  [200, 700],
+  [250, 500],
+  [300, 250],
 ];
 
 function clamp(n: number, lo: number, hi: number) { return Math.max(lo, Math.min(hi, n)); }
@@ -217,13 +240,13 @@ export function estimateEloFromGame(args: {
 }
 
 /**
- * Convenience: compute ACPL, accuracy, tags, and Elo for both sides from raw per-move data.
- * Expects an array of moves with stored best and after scores and side-to-move.
+ * Compute per-move and aggregate accuracy using win-chances formula.
+ * Accepts moves in White-POV convention (cpBeforeWhite, cpAfterWhite).
  */
 export function summarizeGame(moves: Array<{
   side: 'W' | 'B';
-  best?: UciScore | null;   // BEFORE move, POV mover
-  after?: UciScore | null;  // AFTER move, POV opponent
+  cpBeforeWhite: number;
+  cpAfterWhite: number;
   tag?: string | null;
 }>) {
   const bySide = { W: [] as typeof moves, B: [] as typeof moves };
@@ -231,19 +254,19 @@ export function summarizeGame(moves: Array<{
 
   function stats(side: 'W'|'B') {
     const arr = bySide[side];
-    let sum = 0, n = 0, mistakes = 0, blunders = 0;
+    let sumAcc = 0, sumCpl = 0, n = 0, mistakes = 0, blunders = 0;
     for (const m of arr) {
-      const loss = cpLossForMoveSideAware(m.best ?? null, m.after ?? null, side);
-      if (loss == null) continue;
-      n++; sum += loss;
-      const l = Math.round(loss);
-      if (l >= 100) blunders++;
-      else if (l >= 50) mistakes++;
+      const cpl = cpLossWhitePov(m.cpBeforeWhite, m.cpAfterWhite, side);
+      sumCpl += cpl;
+      sumAcc += moveWinAccuracy(m.cpBeforeWhite, m.cpAfterWhite, side);
+      n++;
+      if (cpl >= 150) blunders++;
+      else if (cpl >= 50) mistakes++;
     }
-    const avgCpl = n ? sum / n : null;
+    const avgCpl = n ? sumCpl / n : null;
+    const accuracy = n ? Math.round((sumAcc / n) * 10) / 10 : null;
     const estElo = estimateEloFromGame({ avgCpl, halfMoves: n, mistakes, blunders });
-    const acc = accuracyFromAvgCpl(avgCpl);
-    return { n, avgCpl, mistakes, blunders, estElo, accuracy: acc };
+    return { n, avgCpl, mistakes, blunders, estElo, accuracy };
   }
 
   const white = stats('W');

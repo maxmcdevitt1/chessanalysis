@@ -7,7 +7,7 @@ export type AnnotatedMove = {
   uci?: string;
   tag?: 'Book' | 'Best' | 'Good' | 'Inaccuracy' | 'Mistake' | 'Blunder' | 'Brilliant' | 'Review';
   cpBefore?: number;
-  cpAfter?: number;
+  cpAfterWhite?: number;
   comment?: string;
 };
 
@@ -57,9 +57,8 @@ export function annotatedPgn({
   for (const me of moveEvals || []) {
     const bits: string[] = [];
     if (me.tag && me.tag !== 'Book') bits.push(me.tag);
-    if (typeof me.cpBefore === 'number' && typeof me.cpAfter === 'number') {
-      // Store mover-POV swing
-      const delta = (-me.cpAfter) - me.cpBefore; // convert cpAfter to mover POV then delta
+    if (typeof me.cpBefore === 'number' && typeof me.cpAfterWhite === 'number') {
+      const delta = me.cpAfterWhite - me.cpBefore; // White-POV swing
       bits.push(`Δ=${(delta / 100).toFixed(2)}`);
     }
     if (me.comment) bits.push(me.comment);
@@ -91,6 +90,9 @@ export function analysisJson({
   avgCplW,
   avgCplB,
   result,
+  coachSections,
+  coachMomentNotes,
+  coachMoveNotes,
 }: {
   movesUci: string[];
   moveEvals: AnnotatedMove[];
@@ -100,7 +102,18 @@ export function analysisJson({
   avgCplW?: number | null;
   avgCplB?: number | null;
   result?: string;
+  coachSections?: object | null;
+  coachMomentNotes?: object[] | null;
+  coachMoveNotes?: object[] | null;
 }) {
+  const coach: Record<string, unknown> = {};
+  if (coachSections) coach.sections = coachSections;
+  if (coachMomentNotes?.length) coach.momentNotes = coachMomentNotes;
+  if (coachMoveNotes?.length) coach.moveNotes = coachMoveNotes;
+
+  // Strip FEN strings — they're redundant (derivable from movesUci) and bloat the file.
+  const moves = moveEvals.map(({ fenBefore: _a, fenAfter: _b, ...rest }: any) => rest);
+
   return JSON.stringify({
     schema: 'chess-analysis@1',
     opening,
@@ -108,7 +121,8 @@ export function analysisJson({
     acpl: { white: avgCplW, black: avgCplB },
     result: result || '*',
     movesUci,
-    moves: moveEvals,
+    moves,
+    ...(Object.keys(coach).length ? { coach } : {}),
     exportedAt: new Date().toISOString(),
   }, null, 2);
 }

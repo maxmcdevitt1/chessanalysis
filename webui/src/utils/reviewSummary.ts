@@ -1,4 +1,4 @@
-import { accuracyFromAvgCpl, cpLossForMoveSideAware, summarizeGame, type UciScore } from '../ScoreHelpers';
+import { accuracyFromAvgCpl, cpLossWhitePov, summarizeGame, winChancesPct } from '../ScoreHelpers';
 import type { MoveEval } from '../types/moveEval';
 import { moverSideOf, tallyQualityFromTags } from './moveAnnotations';
 
@@ -52,45 +52,14 @@ export function createRollingStore(key: string = ROLLING_ACPL_KEY): RollingStore
   };
 }
 
-type HalfMoveRecord = { side: 'W' | 'B'; best: UciScore; after: UciScore; tag?: MoveEval['tag'] };
+type HalfMoveRecord = { side: 'W' | 'B'; cpBeforeWhite: number; cpAfterWhite: number; tag?: MoveEval['tag'] };
 
 function buildHalfMove(m: MoveEval): HalfMoveRecord | null {
   const side = moverSideOf(m);
-  const bestCp =
-    typeof (m as any).bestCpBefore === 'number'
-      ? (m as any).bestCpBefore
-      : typeof (m as any).cpBestBefore === 'number'
-      ? (m as any).cpBestBefore
-      : typeof (m as any).cpBefore === 'number'
-      ? side === 'W'
-        ? (m as any).cpBefore
-        : -(m as any).cpBefore
-      : null;
-
-  if (bestCp == null || !Number.isFinite(bestCp)) return null;
-  const best: UciScore = { type: 'cp', value: bestCp };
-
-  const rawAfter: UciScore | null =
-    (m as any).afterScore && typeof (m as any).afterScore.value === 'number'
-      ? (m as any).afterScore
-      : typeof (m as any).cpAfter === 'number' && Number.isFinite((m as any).cpAfter)
-      ? { type: 'cp', value: (m as any).cpAfter }
-      : typeof (m as any).cpAfterWhite === 'number' && Number.isFinite((m as any).cpAfterWhite)
-      ? (() => {
-          const nextSide = side === 'W' ? 'B' : 'W';
-          const val = nextSide === 'W' ? (m as any).cpAfterWhite : -(m as any).cpAfterWhite;
-          return { type: 'cp', value: val } as UciScore;
-        })()
-      : null;
-
-  if (!rawAfter) return null;
-
-  return {
-    side,
-    best,
-    after: rawAfter,
-    tag: m.tag,
-  };
+  const cpBefore = typeof m.cpBefore === 'number' ? m.cpBefore : null;
+  const cpAfterW = typeof m.cpAfterWhite === 'number' ? m.cpAfterWhite : null;
+  if (cpBefore == null || cpAfterW == null) return null;
+  return { side, cpBeforeWhite: cpBefore, cpAfterWhite: cpAfterW, tag: m.tag };
 }
 
 export function deriveReviewSummary(
@@ -104,12 +73,11 @@ export function deriveReviewSummary(
   const halfMoves: HalfMoveRecord[] = [];
   const rollingLosses: number[] = [];
   for (const m of moveEvals) {
-    if (typeof (m as any).mateAfter === 'number') continue;
     const hm = buildHalfMove(m);
     if (!hm) continue;
     halfMoves.push(hm);
-    const loss = cpLossForMoveSideAware(hm.best, hm.after, hm.side);
-    if (loss != null) rollingLosses.push(loss);
+    const loss = cpLossWhitePov(hm.cpBeforeWhite, hm.cpAfterWhite, hm.side);
+    rollingLosses.push(loss);
   }
 
   if (!halfMoves.length) {

@@ -70,6 +70,7 @@ type SidebarProps = {
   coachMomentNotes?: CoachMomentNote[] | null;
   coachMoveNotes?: CoachMoveNote[] | null;
   onGenerateNotes?: () => void | Promise<void>;
+  exportCoachNotes?: boolean;
   coachBusy?: boolean;
   coachError?: string | null;
   liveEvalCp?: number | null;
@@ -267,7 +268,7 @@ function PgnTab(props: SidebarProps) {
   const {
     movesUci, moveEvals, openingInfo, whiteAcc, blackAcc, avgCplW, avgCplB,
     onLoadPgnText, onLoadPgnFile, analyzing, progress, onAnalyze, onAnalyzeFast, onStopAnalyze,
-    result = '*',
+    result = '*', coachSections, coachMomentNotes, coachMoveNotes,
   } = props;
 
   const pgnRef = useRef<HTMLTextAreaElement>(null);
@@ -361,6 +362,9 @@ function PgnTab(props: SidebarProps) {
         <button style={btnStyle()} onClick={() => saveFile('game_analysis.json', 'json', analysisJson({
           movesUci: movesUci || [], moveEvals: moveEvals as any[], opening: openingInfo || null,
           whiteAcc: whiteAcc ?? null, blackAcc: blackAcc ?? null, avgCplW: avgCplW ?? null, avgCplB: avgCplB ?? null, result,
+          coachSections: coachSections ?? null,
+          coachMomentNotes: coachMomentNotes as any[] ?? null,
+          coachMoveNotes: coachMoveNotes as any[] ?? null,
         }))}>
           JSON
         </button>

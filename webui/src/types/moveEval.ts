@@ -1,5 +1,3 @@
-import type { UciScore } from '../ScoreHelpers';
-
 export type MoveEval = {
   index: number;
   moveNo: number;
@@ -7,12 +5,11 @@ export type MoveEval = {
   san: string;
   uci: string;
   best?: string | null;
+  /** White-POV centipawns before the move (engine best). */
   cpBefore?: number | null;
-  cpAfter?: number | null;
+  /** White-POV centipawns after the played move. */
   cpAfterWhite?: number | null;
-  bestCpBefore?: number | null;
   mateAfter?: number | null;
-  afterScore?: UciScore | null;
   cpl?: number | null;
   tag?:
     | 'Genius'

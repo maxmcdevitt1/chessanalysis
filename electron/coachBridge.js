@@ -562,6 +562,37 @@ function normalizeMomentLabel(tagRaw) {
   return 'Good';
 }
 
+// Produces a single readable coaching sentence from mechanical data — used when LLM is unavailable.
+function buildFallbackInsight(moment) {
+  const label = normalizeMomentLabel(moment.tag);
+  const san = moment.san || '(?)';
+  const best = moment.best || moment.bestSan || '';
+  const before = moment.evalBeforeLabel || '';
+  const after = moment.evalAfterLabel || '';
+  const deltaCp = Math.abs(Number(moment.deltaCp || 0));
+  const side = (moment.side === 'B' || moment.side === 'Black') ? 'Black' : 'White';
+
+  if (label === 'Blunder') {
+    const shift = before && after ? ` — position goes from ${before} to ${after}` : '';
+    const fix = best ? `; ${best} was necessary` : '';
+    return `${side} played ${san}${shift}${fix}.`;
+  }
+  if (label === 'Mistake') {
+    const shift = before && after ? `, shifting from ${before} to ${after}` : '';
+    const fix = best ? `; ${best} held the advantage` : '';
+    return `${san} was a mistake${shift}${fix}.`;
+  }
+  if (label === 'Inaccuracy') {
+    const fix = best ? `; ${best} was slightly more accurate` : '';
+    return `${san} was slightly imprecise${fix}.`;
+  }
+  if (label === 'Best') {
+    const context = before && after && before !== after ? ` improving from ${before} to ${after}` : '';
+    return `${san} was the best move available${context}.`;
+  }
+  return `${san} kept the position ${after || before || 'stable'}.`;
+}
+
 function describeEvalShift(moment) {
   const before = moment?.evalBeforeLabel || null;
   const after = moment?.evalAfterLabel || null;
@@ -761,20 +792,19 @@ async function generateMomentNotes(inputs, model) {
     }
     return notes.length ? notes : targets.map((moment) => {
       const label = normalizeMomentLabel(moment.tag);
-      const posFacts = describePositionFeatures(moment.fenBefore, moment.side) || '';
       return {
         moveIndex: moment.index,
         moveNo: moment.moveNo,
         side: moment.side === 'B' || moment.side === 'Black' ? 'B' : 'W',
         san: moment.san || '(?)',
         label,
-        why: [describeEvalShift(moment), posFacts].filter(Boolean).join(' ') || 'Coach note unavailable.',
+        why: buildFallbackInsight(moment),
         tacticalTheme: undefined,
         keySquare: undefined,
-        opponentBestResponse: moment.tacticSummary || undefined,
+        opponentBestResponse: undefined,
         betterMove: quietLabel(label) ? undefined : (moment.best || undefined),
-        betterMoveIdea: quietLabel(label) && moment.best ? `Consider ${moment.best} instead.` : undefined,
-        principle: quietLabel(label) ? undefined : 'Stay alert for forcing moves',
+        betterMoveIdea: quietLabel(label) ? undefined : (moment.best ? `${moment.best} maintains the advantage more cleanly.` : undefined),
+        principle: quietLabel(label) ? undefined : 'Check for forcing moves before committing.',
         pv: '',
         evalBeforeLabel: moment.evalBeforeLabel || null,
         evalAfterLabel: moment.evalAfterLabel || null,
@@ -789,20 +819,19 @@ async function generateMomentNotes(inputs, model) {
 function fallbackMomentNotes(moments) {
   return selectKeyMoments(moments).map((moment) => {
     const label = normalizeMomentLabel(moment.tag);
-    const posFacts = describePositionFeatures(moment.fenBefore, moment.side) || '';
     return {
       moveIndex: moment.index,
       moveNo: moment.moveNo,
       side: moment.side === 'B' || moment.side === 'Black' ? 'B' : 'W',
       san: moment.san || '(?)',
       label,
-      why: [describeEvalShift(moment), posFacts].filter(Boolean).join(' ') || 'Coach offline.',
+      why: buildFallbackInsight(moment),
       tacticalTheme: undefined,
       keySquare: undefined,
-      opponentBestResponse: moment.tacticSummary || undefined,
+      opponentBestResponse: undefined,
       betterMove: quietLabel(label) ? undefined : (moment.best || undefined),
-      betterMoveIdea: quietLabel(label) && moment.best ? `Consider ${moment.best}.` : undefined,
-      principle: quietLabel(label) ? undefined : 'Stay alert for forcing moves',
+      betterMoveIdea: quietLabel(label) ? undefined : (moment.best ? `${moment.best} maintains the advantage more cleanly.` : undefined),
+      principle: quietLabel(label) ? undefined : 'Check for forcing moves before committing.',
       pv: '',
       evalBeforeLabel: moment.evalBeforeLabel || null,
       evalAfterLabel: moment.evalAfterLabel || null,

@@ -20,7 +20,7 @@ export type MomentItem = {
   fenBefore?: string;
   fenAfter?: string;
   cpBefore?: number | null;
-  cpAfter?: number | null;
+  cpAfterWhite?: number | null;
   deltaCp?: number | null;
   best?: string | null;
   bestSan?: string | null;

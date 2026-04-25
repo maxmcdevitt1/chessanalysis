@@ -23,11 +23,9 @@ const PIECE_NAMES: Record<string, string> = {
   k: 'king',
 };
 
-function describeMoveIdea(move: any, cpBefore: number | null, cpAfter: number | null, phase: 'opening'|'middlegame'|'endgame', side: 'W'|'B', game: any) {
+function describeMoveIdea(move: any, cpBefore: number | null, cpAfterWhite: number | null, phase: 'opening'|'middlegame'|'endgame', side: 'W'|'B', game: any) {
   if (!move) return '';
   const hints: string[] = [];
-  // cpAfter is stored as next-mover POV; normalize both to White POV before comparing.
-  const cpAfterWhite = cpAfter != null ? (side === 'W' ? -cpAfter : cpAfter) : null;
   const swing = cpBefore != null && cpAfterWhite != null ? cpAfterWhite - cpBefore : null;
   const mover = side === 'W' ? 'White' : 'Black';
   const opponent = side === 'W' ? 'Black' : 'White';
@@ -66,10 +64,12 @@ function describeMoveIdea(move: any, cpBefore: number | null, cpAfter: number | 
       if (isDeepPush) hints.push(`${mover} advanced a pawn deep into enemy territory to fix weaknesses`);
     }
   }
-  if (typeof swing === 'number' && Math.abs(swing) >= 120) {
-    hints.push(`This move kicked off a forcing sequence worth roughly ${Math.abs(Math.round(swing))} cp in the ${phase}`);
+  // Only add a swing note if no other hint was generated (avoid redundancy)
+  if (!hints.length && typeof swing === 'number' && Math.abs(swing) >= 150) {
+    const severity = Math.abs(swing) >= 300 ? 'decisive' : 'significant';
+    hints.push(`This was a ${severity} moment in the ${phase}`);
   }
-  return hints.join(' ');
+  return hints.join('. ').replace(/\.\.+/g, '.').trim();
 }
 
 function shortenOpeningIdea(text: string): string {
@@ -270,17 +270,8 @@ export function useCoachMoments(movesUci: string[], moveEvals: MoveEval[], bookM
         bestSanFromUci(fenBefore, typeof m.engineBest === 'string' ? m.engineBest : typeof m.best === 'string' ? m.best : null);
       const rawTag = typeof m.tag === 'string' ? m.tag : '';
       const tag = isBookMaskHit ? 'Book' : rawTag;
-      const cpBeforeVal =
-        typeof m.cpBefore === 'number'
-          ? m.cpBefore
-          : typeof m.cpBestBefore === 'number'
-          ? m.cpBestBefore
-          : typeof m.bestCpBefore === 'number'
-          ? m.bestCpBefore
-          : null;
-      const cpAfterVal = typeof m.cpAfter === 'number' ? m.cpAfter : null;
-      // Normalize cpAfter (next-mover POV) to White POV for consistent swing comparison.
-      const cpAfterWhiteVal = cpAfterVal != null ? (side === 'W' ? -cpAfterVal : cpAfterVal) : null;
+      const cpBeforeVal = typeof m.cpBefore === 'number' ? m.cpBefore : null;
+      const cpAfterWhiteVal = typeof m.cpAfterWhite === 'number' ? m.cpAfterWhite : null;
       const phase = phaseForIndex(index, total);
       const swing = cpAfterWhiteVal != null && cpBeforeVal != null ? cpAfterWhiteVal - cpBeforeVal : null;
       const lowTag = tag.toLowerCase?.() || '';
@@ -288,7 +279,7 @@ export function useCoachMoments(movesUci: string[], moveEvals: MoveEval[], bookM
       const dropMagnitude = swing != null ? Math.abs(swing) : null;
       const importantTag = /blunder|mistake|inacc|best|genius/.test(lowTag) && lowTag !== 'good' && lowTag !== 'book';
       const keepDetail = importantTag || (dropMagnitude != null && dropMagnitude >= 45) || motifs.length > 0;
-      let tacticSummary = keepDetail ? describeMoveIdea(move, cpBeforeVal, cpAfterVal, phase, side, game) : '';
+      let tacticSummary = keepDetail ? describeMoveIdea(move, cpBeforeVal, cpAfterWhiteVal, phase, side, game) : '';
       if (keepDetail && index <= 2) tacticSummary = shortenOpeningIdea(tacticSummary);
       const motifsForMove = keepDetail ? motifs : [];
       const isEarly = index < 4;
@@ -312,7 +303,7 @@ export function useCoachMoments(movesUci: string[], moveEvals: MoveEval[], bookM
         best,
         tag,
         cpBefore: cpBeforeVal,
-        cpAfter: cpAfterVal,
+        cpAfterWhite: cpAfterWhiteVal,
         deltaCp: swing ?? undefined,
         fenBefore,
         fenAfter,

@@ -8,15 +8,12 @@ import { safeMove } from '../utils/chessHelpers';
 import {
   bestScoreFromInfos,
   cpFromEval,
-  evalForMover,
   extractScore,
-  lastScoreCp,
 } from '../utils/evalScoring';
 import {
   sameBaseMove,
 } from '../utils/bookUtils';
 import {
-  cpAfterWhiteValue,
   maybeGeniusTag,
   severityTag,
   symbolFor,
@@ -42,6 +39,55 @@ export type AnalysisController = {
   analyzing: boolean;
   progress: number | null;
 };
+
+/** Build a MoveEval record from White-POV centipawn values. */
+function buildMoveRecord(params: {
+  index: number;
+  mover: 'w' | 'b';
+  san: string;
+  uci: string;
+  best: string | null;
+  cpBeforeWhite: number | null;
+  cpAfterWhite: number | null;
+  mateAfter: number | null;
+  cpl: number | null;
+  isBookMove: boolean;
+  deliveredMate: boolean;
+  fenBefore: string;
+  fenAfter: string;
+}): MoveEval {
+  const {
+    index, mover, san, uci, best,
+    cpBeforeWhite, cpAfterWhite, mateAfter,
+    cpl, isBookMove, deliveredMate, fenBefore, fenAfter,
+  } = params;
+
+  let tag: MoveEval['tag'];
+  if (deliveredMate) tag = 'Best';
+  else if (isBookMove) tag = 'Book';
+  else if (cpl != null && cpl <= 35 && cpBeforeWhite != null) tag = 'Best';
+  else tag = severityTag(cpl);
+
+  const genius = maybeGeniusTag({ mover, cpl, mateAfter, cpBeforeWhite, isBookMove });
+  if (genius) tag = genius;
+
+  return {
+    index,
+    moveNo: Math.floor(index / 2) + 1,
+    side: mover === 'w' ? 'White' : 'Black',
+    san,
+    uci,
+    best,
+    cpBefore: cpBeforeWhite,
+    cpAfterWhite,
+    mateAfter,
+    cpl,
+    tag,
+    symbol: symbolFor(tag),
+    fenBefore,
+    fenAfter,
+  };
+}
 
 export function useAnalysisController({
   engine,
@@ -127,35 +173,27 @@ export function useAnalysisController({
         }
 
         const afterScore = bestScoreFromInfos(after?.infos);
-
         const mateAfter = (afterScore?.mate != null && Number.isFinite(afterScore.mate)) ? afterScore.mate : null;
 
         const mover = i % 2 === 0 ? 'w' : 'b';
         const nextSide = mover === 'w' ? 'b' : 'w';
 
-        const beforeCpEngine = cpFromEval(bestScore); // POV = mover (side to move before)
-        const afterCpEngine = cpFromEval(afterScore); // POV = opponent (side to move after)
+        const beforeCpEngine = cpFromEval(bestScore);  // mover POV
+        const afterCpEngine = cpFromEval(afterScore);   // opponent (next mover) POV
 
+        const cpBeforeWhite = beforeCpEngine == null ? null : (mover === 'w' ? beforeCpEngine : -beforeCpEngine);
+        let cpAfterWhite = afterCpEngine == null ? null : (nextSide === 'w' ? afterCpEngine : -afterCpEngine);
+
+        // mover-POV CPL
         const beforeForMover = beforeCpEngine;
-        const afterForMover = afterCpEngine == null ? null : -afterCpEngine; // flip opponent POV to mover POV
-        const bestForMover = beforeForMover;
-
-        const cpBeforeWhite =
-          beforeCpEngine == null ? null : (mover === 'w' ? beforeCpEngine : -beforeCpEngine);
-        // Store cpAfter as opponent POV; also keep White POV.
-        let cpAfterStored = afterCpEngine;
-        let cpAfterWhite =
-          afterCpEngine == null ? null : (nextSide === 'w' ? afterCpEngine : -afterCpEngine);
-
+        const afterForMover = afterCpEngine == null ? null : -afterCpEngine;
         let cpl: number | null = deliveredMate
           ? 0
           : (Number.isFinite(beforeForMover) && Number.isFinite(afterForMover)
               ? Math.max(0, Math.round((beforeForMover as number) - (afterForMover as number)))
               : null);
+
         if (deliveredMate) {
-          // cpAfterStored is next-mover POV: after White mates, Black (next to move) is losing = -10000.
-          // After Black mates, White (next to move) is losing = -10000.
-          cpAfterStored = -10000;
           cpAfterWhite = mover === 'w' ? 10000 : -10000;
         }
 
@@ -163,49 +201,24 @@ export function useAnalysisController({
         const candidatesUci = deriveBookMoves(book, seqBefore, fenBefore, mover);
         let isBookMove = Array.isArray(candidatesUci) && candidatesUci.includes(playedUci);
         const playedIsBest = sameBaseMove(playedUci, bestMoveUci);
-        // If engine agrees the move is best, only fill missing CPL; avoid clamping real loss.
         if (playedIsBest && cpl == null) cpl = 0;
-        // If the move dumps significant CPL, don't treat it as book even if it appears in the tree.
         if (isBookMove && cpl != null && cpl >= 50) isBookMove = false;
 
-        const bestCpBeforeMover = Number.isFinite(bestForMover) ? bestForMover : null;
-
-        let tag: MoveEval['tag'];
-        if (deliveredMate) tag = 'Best';
-        else if (isBookMove) tag = 'Book';
-        else if (playedIsBest && (cpl == null || cpl <= 35) && bestCpBeforeMover != null) tag = 'Best';
-        else tag = severityTag(cpl);
-
-        const genius = maybeGeniusTag({
-          mover,
-          cpl,
-          mateAfter,
-          cpBeforeWhite,
-          isBookMove,
-        });
-        if (genius) tag = genius;
-
-        const symbol = symbolFor(tag);
-
-        results.push({
+        results.push(buildMoveRecord({
           index: i,
-          moveNo: Math.floor(i / 2) + 1,
-          side: mover === 'w' ? 'White' : 'Black',
+          mover,
           san,
           uci: playedUci,
           best: bestMoveUci,
-          cpBefore: cpBeforeWhite,
-          cpAfter: cpAfterStored,
-          // optional convenience for charts expecting White POV:
-          cpAfterWhite: cpAfterWhite,
-          bestCpBefore: bestCpBeforeMover,
+          cpBeforeWhite,
+          cpAfterWhite,
           mateAfter,
           cpl,
-          tag,
-          symbol,
+          isBookMove,
+          deliveredMate,
           fenBefore,
           fenAfter,
-        });
+        }));
 
         if (controller.signal.aborted) break;
         setProgress(Math.round(((i + 1) / movesUci.length) * 100));
@@ -286,89 +299,49 @@ export function useAnalysisController({
         const afterScore = extractScore(next?.score);
         const mateAfter = (afterScore?.mate != null && Number.isFinite(afterScore.mate)) ? afterScore.mate : null;
 
-        const afterForNext = evalForMover(afterScore, nextSide);
+        const beforeCpEngine = cpFromEval(bestScore);  // mover POV
+        const afterCpEngine = cpFromEval(afterScore);   // opponent (next mover) POV
 
-        const beforeCpEngine = cpFromEval(bestScore); // POV = mover (side to move before)
-        const afterCpEngine = cpFromEval(afterScore);  // POV = opponent (side to move after)
-
-        const cpBeforeWhite =
-          beforeCpEngine == null ? null : (mover === 'w' ? beforeCpEngine : -beforeCpEngine);
-        let cpAfterStored = afterCpEngine;
-        let cpAfterWhite =
-          afterCpEngine == null ? null : (nextSide === 'w' ? afterCpEngine : -afterCpEngine);
+        const cpBeforeWhite = beforeCpEngine == null ? null : (mover === 'w' ? beforeCpEngine : -beforeCpEngine);
+        let cpAfterWhite = afterCpEngine == null ? null : (nextSide === 'w' ? afterCpEngine : -afterCpEngine);
 
         const beforeForMover = beforeCpEngine;
-        const afterForMover = afterCpEngine == null ? null : -afterCpEngine; // flip opponent POV to mover POV
-        const bestForMover = beforeForMover;
-
+        const afterForMover = afterCpEngine == null ? null : -afterCpEngine;
         let cpl: number | null = info.isMate
           ? 0
           : (Number.isFinite(beforeForMover) && Number.isFinite(afterForMover)
               ? Math.max(0, Math.round((beforeForMover as number) - (afterForMover as number)))
               : null);
+
         if (info.isMate) {
-          // cpAfterStored is next-mover POV: whoever just got mated, the side to move is losing = -10000.
-          cpAfterStored = -10000;
           cpAfterWhite = mover === 'w' ? 10000 : -10000;
         }
 
-        const bestCpBeforeMover = Number.isFinite(bestForMover) ? bestForMover : null;
         const seqBefore = movesUci.slice(0, i);
         const candidatesUci = deriveBookMoves(book, seqBefore, info.fenBefore, mover);
         let isBookMove = Array.isArray(candidatesUci) && candidatesUci.includes(info.uci);
         const playedIsBest = sameBaseMove(info.uci, bestMoveUci);
-        // Avoid flagging best-line moves as blunders when the after-eval is noisy.
         if (playedIsBest) {
           if (cpl == null) cpl = 0;
           else cpl = Math.min(cpl, 8);
         }
-        // Do not mark as book if CPL is large even when tree contains it.
         if (isBookMove && cpl != null && cpl >= 50) isBookMove = false;
 
-        let tag: MoveEval['tag'];
-        if (info.isMate) tag = 'Best';
-        else if (isBookMove) tag = 'Book';
-        else if (playedIsBest && (cpl == null || cpl <= 35) && bestCpBeforeMover != null) tag = 'Best';
-        else tag = severityTag(cpl);
-
-        const genius = maybeGeniusTag({
-          mover,
-          cpl,
-          mateAfter: info.isMate ? -1 : mateAfter,
-          cpBeforeWhite,
-          isBookMove,
-        });
-        if (genius) tag = genius;
-
-        const symbol = symbolFor(tag);
-
-        const afterScoreObj =
-          (afterScore?.mate != null && Number.isFinite(afterScore.mate))
-            ? ({ type: 'mate', value: afterScore.mate } as const)
-            : (Number.isFinite(afterForNext)
-                ? ({ type: 'cp', value: afterForNext } as const)
-                : null);
-
-        out.push({
+        out.push(buildMoveRecord({
           index: i,
-          moveNo: Math.floor(i / 2) + 1,
-          side: info.side,
+          mover,
           san: info.san,
           uci: info.uci,
           best: bestMoveUci,
-          cpBefore: cpBeforeWhite,
-          cpAfter: cpAfterStored,
-          // optional white-POV value for display components
+          cpBeforeWhite,
           cpAfterWhite,
-          afterScore: afterScoreObj,
-          bestCpBefore: bestCpBeforeMover,
-          mateAfter,
+          mateAfter: info.isMate ? -1 : mateAfter,
           cpl,
-          tag,
-          symbol,
+          isBookMove,
+          deliveredMate: info.isMate,
           fenBefore: info.fenBefore,
           fenAfter: info.fenAfter,
-        });
+        }));
 
         if (i % 5 === 0) {
           setProgress(Math.round(((i + 1) / seq.length) * 100));

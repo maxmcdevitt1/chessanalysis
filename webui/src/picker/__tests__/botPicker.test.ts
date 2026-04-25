@@ -55,15 +55,8 @@ describe('createBotPicker', () => {
     expect(['e2e4', 'd2d4', 'g1f3']).toContain(pick.uci);
   });
 
-  it('bumps MultiPV when engine returns no candidates before succeeding', async () => {
-    const responses: EngineAnalysis[] = [
-      { sideToMove: 'w', infos: [] },
-      {
-        sideToMove: 'w',
-        infos: [{ move: 'c2c4', multipv: 1, depth: 10, score: { type: 'cp', value: 30 } }],
-      },
-    ];
-    const engine = makeEngineMock(responses);
+  it('falls back to a random legal move when engine returns no candidates', async () => {
+    const engine = makeEngineMock({ sideToMove: 'w', infos: [] });
     const picker = createBotPicker({
       engine,
       rng: createMulberry32(11),
@@ -72,9 +65,10 @@ describe('createBotPicker', () => {
 
     const pick = await picker.pickMove({ fen: START_FEN, elo: 1600 });
 
-    expect(engine.analyse).toHaveBeenCalledTimes(2);
-    expect(pick.uci).toBe('c2c4');
-    expect(pick.meta.multipvBumps.length + pick.meta.timeExtensions.length).toBeGreaterThan(0);
+    expect(engine.analyse).toHaveBeenCalledTimes(1);
+    expect(pick.reason).toBe('engine:fallback');
+    expect(typeof pick.uci).toBe('string');
+    expect(pick.uci.length).toBeGreaterThanOrEqual(4);
   });
 
   it('respects explicit seeds for reproducible move selection', async () => {

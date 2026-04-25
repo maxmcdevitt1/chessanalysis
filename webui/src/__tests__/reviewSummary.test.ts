@@ -33,14 +33,16 @@ function makeMove(partial: Partial<MoveEval>): MoveEval {
 describe('deriveReviewSummary', () => {
   it('summarises CPL and updates rolling history', () => {
     const store = new MemoryStore([5, 10]);
+    // White: cpBefore=40, cpAfterWhite=20 → CPL=20
+    // Black: cpBefore=30, cpAfterWhite=0  → CPL=0 (max(0, 0-30)=0, no improvement counted)
     const moves: MoveEval[] = [
       makeMove({
         index: 0,
         moveNo: 1,
         side: 'White',
         san: 'e4',
-        bestCpBefore: 40,
-        afterScore: { type: 'cp', value: -20 },
+        cpBefore: 40,
+        cpAfterWhite: 20,
         tag: 'Mistake',
       }),
       makeMove({
@@ -48,8 +50,8 @@ describe('deriveReviewSummary', () => {
         moveNo: 1,
         side: 'Black',
         san: 'e5',
-        bestCpBefore: -30,
-        afterScore: { type: 'cp', value: 0 },
+        cpBefore: 30,
+        cpAfterWhite: 0,
         tag: 'Best',
       }),
     ];
@@ -66,20 +68,22 @@ describe('deriveReviewSummary', () => {
 
   it('trims rolling history to the configured sample size', () => {
     const store = new MemoryStore([1, 2, 3]);
+    // White: cpBefore=30, cpAfterWhite=10 → CPL=20
+    // Black: cpBefore=15, cpAfterWhite=25 → CPL=10 (max(0, 25-15)=10)
     const moves: MoveEval[] = [
       makeMove({
         index: 0,
         moveNo: 1,
         side: 'White',
-        bestCpBefore: 30,
-        afterScore: { type: 'cp', value: -10 },
+        cpBefore: 30,
+        cpAfterWhite: 10,
       }),
       makeMove({
         index: 1,
         moveNo: 1,
         side: 'Black',
-        bestCpBefore: -15,
-        afterScore: { type: 'cp', value: 25 },
+        cpBefore: 15,
+        cpAfterWhite: 25,
       }),
     ];
 
