@@ -45,7 +45,11 @@ export default function CoachCard({ note, compact = false, defaultExpanded = fal
   const isQuiet = gate?.isQuiet ?? quietLabel;
   const allowDetails = gate?.allowDetails ?? !isQuiet;
   const allowWhy = gate?.allowWhy ?? !isQuiet;
-  const hasDetailFields = allowDetails && Boolean(note.opponentIdea || note.refutation || note.betterPlan || note.pv);
+  const hasDetailFields = allowDetails && Boolean(
+    note.opponentBestResponse || note.opponentIdea ||
+    note.betterMove || note.betterMoveIdea || note.betterPlan ||
+    note.refutation || note.pv
+  );
   const [expanded, setExpanded] = useState(defaultExpanded && hasDetailFields);
   useEffect(() => {
     setExpanded(defaultExpanded && hasDetailFields);
@@ -56,7 +60,7 @@ export default function CoachCard({ note, compact = false, defaultExpanded = fal
   const bodyFont = compact ? 13 : 14;
   const headerFont = compact ? 14 : 16;
   const headline = note.bubbleTitle || `Move ${note.moveNo}${glyph} ${note.san}`;
-  const bodyText = clampSentences(note.why, isQuiet ? 1 : 2);
+  const bodyText = clampSentences(note.why, 2);
   const showPrinciple = !isQuiet && allowWhy && Boolean(note.principle);
 
   return (
@@ -125,27 +129,42 @@ export default function CoachCard({ note, compact = false, defaultExpanded = fal
           </button>
           {expanded && (
             <div style={{ marginTop: 10, borderTop: '1px solid rgba(148,163,184,0.25)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 8 }}>
-              {note.opponentIdea && (
+              {(note.tacticalTheme && note.tacticalTheme !== 'none') && (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ fontSize: 12, color: '#94a3b8' }}>Tactical theme:</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: '#fbbf24', textTransform: 'capitalize' }}>{note.tacticalTheme}</span>
+                  {note.keySquare && (
+                    <>
+                      <span style={{ fontSize: 12, color: '#94a3b8' }}>· Key square:</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: '#a78bfa', fontFamily: 'monospace' }}>{note.keySquare}</span>
+                    </>
+                  )}
+                </div>
+              )}
+              {(note.betterMove || note.betterMoveIdea || note.betterPlan) && (
                 <div>
-                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Opponent idea</div>
-                  <div style={{ fontSize: 13 }}>{note.opponentIdea}</div>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4, color: '#4ade80' }}>Better move</div>
+                  {note.betterMove && (
+                    <span style={{ fontFamily: 'monospace', fontSize: 13, fontWeight: 700, color: '#4ade80', marginRight: 8 }}>{note.betterMove}</span>
+                  )}
+                  <span style={{ fontSize: 13 }}>{note.betterMoveIdea || note.betterPlan}</span>
+                </div>
+              )}
+              {(note.opponentBestResponse || note.opponentIdea) && (
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Opponent's best response</div>
+                  <div style={{ fontSize: 13 }}>{note.opponentBestResponse || note.opponentIdea}</div>
                 </div>
               )}
               {note.refutation && (
                 <div>
-                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Refutation</div>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Engine refutation</div>
                   <div style={{ fontSize: 13 }}>{note.refutation}</div>
-                </div>
-              )}
-              {note.betterPlan && (
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Better plan</div>
-                  <div style={{ fontSize: 13 }}>{note.betterPlan}</div>
                 </div>
               )}
               {note.pv && (
                 <div>
-                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>PV</div>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Best line</div>
                   <div style={{ fontSize: 13, fontFamily: 'monospace' }}>{note.pv}</div>
                 </div>
               )}

@@ -79,6 +79,12 @@ export type CoachMomentNote = {
   san: string;
   label: 'Best' | 'Good' | 'Inaccuracy' | 'Mistake' | 'Blunder' | 'Book';
   why: string;
+  tacticalTheme?: string;
+  keySquare?: string;
+  opponentBestResponse?: string;
+  betterMove?: string;
+  betterMoveIdea?: string;
+  // legacy aliases kept for backwards compat with any stored notes
   opponentIdea?: string;
   refutation?: string;
   betterPlan?: string;
@@ -86,6 +92,8 @@ export type CoachMomentNote = {
   pv?: string;
   evalBeforeLabel?: string | null;
   evalAfterLabel?: string | null;
+  // UI-only fields (set by rendering layer, not from coach backend)
+  bubbleTitle?: string | null;
   gate?: CoachGate;
 };
 

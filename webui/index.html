@@ -5,11 +5,34 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Chess Analysis</title>
     <style>
-      body { margin:0; background:#1a1a1a; color:#eee; font-family: system-ui, sans-serif; }
-      .panel { padding: 12px; }
-      button, input, select, textarea { background:#222; color:#eee; border:1px solid #444; border-radius:6px; padding:6px 10px; }
-      button:hover { filter: brightness(1.1); }
-      .row { display:flex; gap:8px; align-items:center; }
+      *, *::before, *::after { box-sizing: border-box; }
+      html, body, #root { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+      body {
+        background: #0a0a0a;
+        color: #e8e8e8;
+        font-family: -apple-system, BlinkMacSystemFont, 'Inter', system-ui, sans-serif;
+        font-size: 13px;
+        -webkit-font-smoothing: antialiased;
+        line-height: 1.5;
+      }
+      ::-webkit-scrollbar { width: 5px; height: 5px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: #2a2a2a; border-radius: 999px; }
+      ::-webkit-scrollbar-thumb:hover { background: #3a3a3a; }
+      button { font-family: inherit; }
+      button:hover:not(:disabled) { filter: brightness(1.12); }
+      select { font-family: inherit; outline: none; }
+      textarea, input { font-family: inherit; }
+      textarea:focus, input:focus { outline: 1px solid #333; }
+      @keyframes slide {
+        0% { transform: translateX(-100%); }
+        100% { transform: translateX(300%); }
+      }
+      @keyframes popFade {
+        0% { transform: scale(0.94); opacity: 0; }
+        40% { transform: scale(1.02); opacity: 1; }
+        100% { transform: scale(1); opacity: 1; }
+      }
     </style>
   </head>
   <body>
