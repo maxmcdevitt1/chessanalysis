@@ -44,11 +44,15 @@ win:
       to: .
 
 nsis:
+  artifactName: chessanalysis_${version}_windows_${arch}_setup.${ext}
   oneClick: false
   allowToChangeInstallationDirectory: true
   perMachine: false
   createDesktopShortcut: true
   deleteAppDataOnUninstall: false
+
+portable:
+  artifactName: chessanalysis_${version}_windows_${arch}_portable.${ext}
 
 mac:
   icon: build/icon.icns
