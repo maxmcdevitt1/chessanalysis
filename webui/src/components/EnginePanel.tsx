@@ -62,9 +62,16 @@ export default function EnginePanel({
                   fontSize: 14,
                   fontWeight: 600,
                   cursor: 'pointer',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  gap: 2,
                 }}
               >
-                {entry.label}
+                <span>{entry.label}</span>
+                <span style={{ fontSize: 11, fontWeight: 400, opacity: 0.75 }}>
+                  {entry.range[0]}–{entry.range[1]}
+                </span>
               </button>
             );
           })}

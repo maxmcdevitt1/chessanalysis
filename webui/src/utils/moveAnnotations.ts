@@ -1,5 +1,4 @@
 import type { MoveEval, BadgeTag } from '../types/moveEval';
-import { mateToCp } from './evalScoring';
 
 type QualityCounts = { total: number; best: number; good: number; inaccuracy: number; mistake: number; blunder: number };
 type QualityBySide = { W: QualityCounts; B: QualityCounts };
@@ -39,9 +38,10 @@ export function tallyQualityFromTags(moves: MoveEval[]): QualityBySide {
 }
 
 const SEVERITY_THRESHOLDS = {
-  goodMax: 80,
-  inaccuracyMax: 180,
-  mistakeMax: 380,
+  goodMax: 10,        // ≤ 10 cp → Good
+  inaccuracyMax: 49,  // ≤ 49 cp → Inaccuracy
+  mistakeMax: 149,    // ≤ 149 cp → Mistake
+                      // > 149 cp → Blunder
 };
 
 export function severityTag(cpl: number | null): MoveEval['tag'] {
@@ -62,18 +62,15 @@ export function maybeGeniusTag(opts: {
   const { mover, cpl, mateAfter, cpBeforeWhite, isBookMove } = opts;
   if (isBookMove) return null;
   if (mateAfter == null || !Number.isFinite(mateAfter)) return null;
-  // mateAfter is POV of opponent (side to move). Negative means mover is winning.
-  if (mateAfter >= -1) return null; // not a forced mate for mover or too trivial
+  if (mateAfter >= -1) return null;
   const mateDist = Math.abs(mateAfter);
-  if (mateDist <= 2) return null; // skip obvious mate-in-1/2
+  if (mateDist <= 2) return null;
 
-  // Before the move, avoid already-crushing positions; focus on surprise turnarounds.
   const beforeForMover = typeof cpBeforeWhite === 'number'
     ? (mover === 'w' ? cpBeforeWhite : -cpBeforeWhite)
     : null;
-  if (beforeForMover != null && beforeForMover > 300) return null; // already winning big
+  if (beforeForMover != null && beforeForMover > 300) return null;
 
-  // If the move dumped material (high CPL) or even wasn't marked Best yet still forces mate, call it genius.
   const sacrificeLike = cpl == null ? true : cpl >= 12;
   if (!sacrificeLike) return null;
   return 'Genius';
@@ -93,17 +90,9 @@ export function symbolFor(tag: MoveEval['tag']): MoveEval['symbol'] {
   }
 }
 
+/** Read cpAfterWhite (White POV) from a MoveEval record. */
 export function cpAfterWhiteValue(m: any): number | null {
   if (!m) return null;
-  const side = (m.side === 'White' || m.side === 'W') ? 'W' : 'B';
   if (typeof m.cpAfterWhite === 'number') return m.cpAfterWhite;
-  if (typeof m.cpAfter === 'number') {
-    return side === 'W' ? -m.cpAfter : m.cpAfter;
-  }
-  if (typeof m.mateAfter === 'number') {
-    const mateCp = mateToCp(m.mateAfter);
-    if (mateCp == null) return null;
-    return side === 'W' ? -mateCp : mateCp;
-  }
   return null;
 }

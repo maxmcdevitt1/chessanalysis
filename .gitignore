@@ -12,6 +12,7 @@ Icon?
 !.vscode/settings.json
 !.vscode/tasks.json
 .idea/
+.claude/
 *.iml
 
 # ---- Node / JS toolchains --------------------------------------------------

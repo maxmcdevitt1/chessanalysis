@@ -24,7 +24,7 @@ export type UseCoachActionsArgs = {
 function buildEvalSummary(moments: CoachInputs['moments']) {
   const enriched = moments.map((m) => {
     const before = Number(m?.cpBefore);
-    const after = Number(m?.cpAfter);
+    const after = Number(m?.cpAfterWhite);
     const delta = Number.isFinite(before) && Number.isFinite(after) ? after - before : null;
     return { ...m, delta, absDelta: delta == null ? 0 : Math.abs(delta) };
   });

@@ -32,7 +32,7 @@ import { buildCoachBubbles } from './coach/coachBubble';
 import { useCoachNoteForPly, useCoachMomentNoteForPly } from './hooks/useCoachNoteForPly';
 import type { CoachGate } from './types/coach';
 
-const MOVES_PANEL_WIDTH = 320;
+const MOVES_PANEL_WIDTH = 220;
 
 function clampSentences(text: string | null | undefined, limit: number) {
   if (!text) return '';
@@ -378,24 +378,23 @@ export default function App() {
         <div
           style={{
             display: 'grid',
-            gridTemplateColumns: `${MOVES_PANEL_WIDTH}px 1fr ${sidebarOpen ? 480 : 28}px`,
+            gridTemplateColumns: `${MOVES_PANEL_WIDTH}px 1fr ${sidebarOpen ? 360 : 28}px`,
             gridTemplateRows: '1fr',
             alignItems: 'stretch',
-            gap: 12,
-            padding: 12,
+            gap: 0,
             height: '100vh',
             boxSizing: 'border-box',
             minHeight: 0,
+            background: '#0a0a0a',
           }}
         >
-        <div style={{ width: MOVES_PANEL_WIDTH }}>
+        <div style={{ width: MOVES_PANEL_WIDTH, height: '100vh', overflow: 'hidden' }}>
           <MovesTable
             moves={moveEvals}
             bookMask={bookMask}
             bookDepth={bookDepth}
             onJump={jumpToPly}
             currentPly={ply}
-            height={typeof window !== 'undefined' ? Math.max(200, window.innerHeight - 220) : undefined}
           />
         </div>
 

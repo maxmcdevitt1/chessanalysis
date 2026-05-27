@@ -226,37 +226,32 @@ export function createOpeningBook(): OpeningBook {
     }
     const openings = Array.from(grouped.values());
     let opening: { weight: number; lines: NormalizedLine[] } | null = null;
-    if (favorCommon) {
-      openings.sort((a, b) => (b.weight ?? 1) - (a.weight ?? 1));
-      opening = openings[0] ?? null;
-    } else {
-      const total = openings.reduce((sum, row) => sum + (row.weight || 1), 0);
-      let r = rng.next() * total;
-      for (const row of openings) {
-        r -= (row.weight || 1);
-        if (r <= 0) { opening = row; break; }
-      }
-      if (!opening) opening = openings[openings.length - 1] ?? null;
+    // Always use weighted random selection so the engine doesn't play the same
+    // opening every game. favorCommon bands get variety within common openings.
+    const total = openings.reduce((sum, row) => sum + (row.weight || 1), 0);
+    let r = rng.next() * total;
+    for (const row of openings) {
+      r -= (row.weight || 1);
+      if (r <= 0) { opening = row; break; }
     }
+    if (!opening) opening = openings[openings.length - 1] ?? null;
     if (!opening) return null;
     const lineVariants = opening.lines
       .slice()
       .sort((a, b) => (b.lineWeight ?? 1) - (a.lineWeight ?? 1));
+    // favorCommon bands stay within the most-played lines; others use all variants.
     const pool = favorCommon
       ? lineVariants.slice(0, Math.max(1, topLines))
       : lineVariants;
     let linePick: NormalizedLine | undefined;
-    if (favorCommon) {
-      linePick = pool[0];
-    } else {
-      const total = pool.reduce((sum, row) => sum + (row.lineWeight || 1), 0);
-      let r = rng.next() * total;
-      for (const row of pool) {
-        r -= (row.lineWeight || 1);
-        if (r <= 0) { linePick = row; break; }
-      }
-      if (!linePick) linePick = pool[pool.length - 1];
+    // Always use weighted random selection within the pool for variety.
+    const lineTotal = pool.reduce((sum, row) => sum + (row.lineWeight || 1), 0);
+    let lr = rng.next() * lineTotal;
+    for (const row of pool) {
+      lr -= (row.lineWeight || 1);
+      if (lr <= 0) { linePick = row; break; }
     }
+    if (!linePick) linePick = pool[pool.length - 1];
     if (!linePick) return null;
     const nextUci = linePick.movesUci[history.length];
     if (!nextUci) return null;

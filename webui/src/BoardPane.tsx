@@ -218,43 +218,58 @@ function PlayerBadge({
   name,
   acc,
   estElo,
+  clockMs,
 }: {
   side: 'white' | 'black';
   name: string;
   acc: number | null | undefined;
   estElo: number | null | undefined;
+  clockMs?: number | null;
 }) {
   const isWhite = side === 'white';
-  const bg = isWhite ? '#f5f5f5' : '#2f2f33';
-  const fg = isWhite ? '#222' : '#f3f4f6';
-  const border = isWhite ? '#e0e0e0' : '#3f3f45';
-  const pillBg = isWhite ? '#e8e8e8' : '#3a3a40';
+  const totalSeconds = clockMs != null && isFinite(clockMs) ? Math.max(0, Math.floor(clockMs / 1000)) : null;
+  const clockStr = totalSeconds != null
+    ? `${Math.floor(totalSeconds / 60)}:${String(totalSeconds % 60).padStart(2, '0')}`
+    : null;
+  const lowTime = totalSeconds != null && totalSeconds < 30;
+
   return (
     <div style={{
-      minWidth: 160,
-      padding: '10px 12px',
-      borderRadius: 12,
-      background: bg,
-      color: fg,
-      border: `1px solid ${border}`,
-      boxShadow: '0 2px 6px rgba(0,0,0,0.25)',
       display: 'flex',
-      flexDirection: 'column',
-      gap: 6,
-      alignItems: 'flex-start',
+      alignItems: 'center',
+      gap: 8,
+      padding: '6px 10px',
+      borderRadius: 8,
+      background: '#111',
+      border: '1px solid #1e1e1e',
     }}>
-      <div style={{ fontSize: 16, fontWeight: 700 }}>{name}</div>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <span
-          style={{ padding: '4px 8px', borderRadius: 8, background: pillBg, color: fg, fontWeight: 600 }}
-          title="Estimated playing strength from the game review"
-        >
-          Est. Elo: {estElo != null ? Math.round(estElo) : '—'}
+      <div style={{
+        width: 9,
+        height: 9,
+        borderRadius: '50%',
+        background: isWhite ? '#f0f0f0' : '#222',
+        border: `1px solid ${isWhite ? '#aaa' : '#555'}`,
+        flexShrink: 0,
+      }} />
+      <span style={{ fontSize: 13, fontWeight: 600, color: '#d0d0d0' }}>{name}</span>
+      {acc != null && (
+        <span style={{ fontSize: 11, color: '#666', marginLeft: 2 }}>{Math.round(acc)}%</span>
+      )}
+      {estElo != null && (
+        <span style={{ fontSize: 11, color: '#555' }}>~{Math.round(estElo)}</span>
+      )}
+      {clockStr && (
+        <span style={{
+          marginLeft: 4,
+          fontSize: 13,
+          fontWeight: 700,
+          fontVariantNumeric: 'tabular-nums',
+          color: lowTime ? '#f87171' : '#9ca3af',
+          letterSpacing: '0.02em',
+        }}>
+          {clockStr}
         </span>
-        <span style={{ padding: '4px 8px', borderRadius: 8, background: pillBg, color: fg, fontWeight: 600 }}>
-          Acc: {acc != null ? `${Math.round(acc)}%` : '—'}
-        </span>
-      </div>
+      )}
     </div>
   );
 }
@@ -307,34 +322,38 @@ function lastNumber(a?: Array<number | null>): number | null {
 }
 
 /* ------------------------------ Eval bar --------------------------------- */
-/** Shows a number consistently: if pending and cp available, append " …" instead of hiding it. */
 function EvalBar({ cp, pending, height }: { cp: number | null; pending: boolean; height: number }) {
   const capped = cp == null ? 0 : Math.max(-1000, Math.min(1000, cp));
-  const whitePct = Math.max(0, Math.min(100, 50 + capped / 20));
-  const blackPct = 100 - whitePct;
-  const barHeight = Math.max(260, Math.floor(height)); // tall, but never tiny
-
+  const whitePct = Math.max(3, Math.min(97, 50 + capped / 20));
   const num = cp == null ? null : (cp / 100).toFixed(1);
-  const label = num != null ? `${cp >= 0 ? '+' : ''}${num}${pending ? ' …' : ''}` : (pending ? '…' : '—');
+  const label = num != null ? `${cp! >= 0 ? '+' : ''}${num}` : '—';
+  const isWhiteAhead = (cp ?? 0) >= 0;
 
   return (
-    <div style={{ display:'flex', gap:14, alignItems:'center' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4, height }}>
+      {/* Score label */}
       <div style={{
-        width: 34,
-        height: barHeight,
-        border: '2px solid #444',
-        borderRadius: 6,
+        fontSize: 11,
+        fontWeight: 700,
+        color: isWhiteAhead ? '#f0f0f0' : '#888',
+        fontVariantNumeric: 'tabular-nums',
+        letterSpacing: '0.02em',
+        opacity: pending ? 0.6 : 1,
+      }}>
+        {label}
+      </div>
+      {/* Bar */}
+      <div style={{
+        width: 10,
+        flex: 1,
+        borderRadius: 999,
         overflow: 'hidden',
+        background: '#1c1c1c',
         display: 'flex',
         flexDirection: 'column',
-        background: '#000',
       }}>
-        <div style={{ flexBasis: `${whitePct}%`, background: '#fff' }} />
-        <div style={{ flexBasis: `${blackPct}%`, background: '#000' }} />
-      </div>
-      <div style={{ fontSize: 16, color: '#ddd', minWidth: 56 }}>
-        {label}
-        <div style={{ opacity: .6, fontSize: 14 }}>Eval</div>
+        <div style={{ flex: `0 0 ${100 - whitePct}%`, background: '#222', transition: 'flex 300ms ease' }} />
+        <div style={{ flex: `0 0 ${whitePct}%`, background: '#e8e8e8', transition: 'flex 300ms ease', borderRadius: '0 0 999px 999px' }} />
       </div>
     </div>
   );
@@ -521,222 +540,202 @@ export default function BoardPane(props: BoardPaneProps) {
 
   /* --------------------------------- Render --------------------------------- */
 
+  const EVAL_BAR_W = 14;
+  const EVAL_GAP = 8;
+  const boardSide = orientation === 'white' ? 'black' : 'white';
+  const boardSideName = boardSide === 'white' ? whiteName : blackName;
+  const boardSideAcc = boardSide === 'white' ? whiteAcc : blackAcc;
+  const boardSideElo = boardSide === 'white' ? whiteEstElo : blackEstElo;
+  const boardSideClock = boardSide === 'white' ? clockMs?.w : clockMs?.b;
+  const bottomSide = orientation;
+  const bottomName = bottomSide === 'white' ? whiteName : blackName;
+  const bottomAcc = bottomSide === 'white' ? whiteAcc : blackAcc;
+  const bottomElo = bottomSide === 'white' ? whiteEstElo : blackEstElo;
+  const bottomClock = bottomSide === 'white' ? clockMs?.w : clockMs?.b;
+
+  const iconBtn = (disabled = false): React.CSSProperties => ({
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+    width: 36, height: 36, borderRadius: 8,
+    border: '1px solid #232323', background: '#141414',
+    color: disabled ? '#333' : '#888',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    transition: 'background 100ms, color 100ms',
+    flexShrink: 0,
+  });
+  const textBtn = (disabled = false, accent = false): React.CSSProperties => ({
+    display: 'inline-flex', alignItems: 'center', gap: 5,
+    padding: '7px 12px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+    border: `1px solid ${accent ? '#1a3d2b' : '#222'}`,
+    background: accent ? '#0a1f14' : '#131313',
+    color: disabled ? '#333' : accent ? '#4ade80' : '#aaa',
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    transition: 'background 100ms',
+  });
+
   return (
-    <div style={{ display:'flex', flexDirection:'column', gap:12, alignItems:'center', justifyContent:'center', width:'100%', maxWidth:'98vw', margin:'0 auto' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', width: '100%', height: '100%', gap: 0 }}>
       <style>{keyframes}</style>
-      {/* Top row: player badges spaced evenly over the board area */}
-      <div style={{ display:'flex', alignItems:'flex-start', width: layoutWidth, margin:'0 auto', gap:12 }}>
-        <div style={{ flex:'1 1 0%', display:'flex', justifyContent:'flex-start', marginLeft: 6, alignItems: 'center', gap: 10 }}>
-          <PlayerBadge side="white" name={whiteName} acc={whiteAcc} estElo={whiteEstElo} />
-          <span style={{ fontSize: 16, color: '#e2e8f0', fontVariantNumeric: 'tabular-nums' }}>
-            {formatClock(clockMs?.w)}
-          </span>
-        </div>
-        <div style={{ flex:'1 1 0%', display:'flex', justifyContent:'flex-end', marginRight: Math.max(0, evalColWidth * 0.45), alignItems:'center', gap:12 }}>
-          <span style={{ fontSize: 16, color: '#e2e8f0', fontVariantNumeric: 'tabular-nums' }}>
-            {formatClock(clockMs?.b)}
-          </span>
-          <PlayerBadge side="black" name={blackName} acc={blackAcc} estElo={blackEstElo} />
-        </div>
+
+      {/* Opponent badge (top) */}
+      <div style={{ width: boardWidth + EVAL_BAR_W + EVAL_GAP, marginBottom: 6, paddingLeft: EVAL_BAR_W + EVAL_GAP }}>
+        <PlayerBadge side={boardSide} name={boardSideName} acc={boardSideAcc} estElo={boardSideElo} clockMs={boardSideClock} />
       </div>
 
-      {/* Main row: board + eval bar */}
-      <div style={{ position:'relative', display:'flex', flexDirection:'row', gap:18, alignItems:'flex-start', justifyContent:'center', width: layoutWidth, margin:'0 auto', overflow:'visible' }}>
-        <div ref={containerRef} style={{ position:'relative', width: boardWidth, paddingBottom: 50 }}>
+      {/* Board row: eval bar + board */}
+      <div ref={containerRef} style={{ display: 'flex', flexDirection: 'row', gap: EVAL_GAP, alignItems: 'stretch', position: 'relative' }}>
+        {/* Eval bar (left) */}
+        <div style={{ width: EVAL_BAR_W, height: boardWidth, flexShrink: 0 }}>
+          <EvalBar cp={evalCpDisplay} pending={Boolean(evalPending)} height={boardWidth} />
+        </div>
+
+        {/* Board */}
+        <div style={{ position: 'relative', width: boardWidth, flexShrink: 0 }}>
           <Chessboard
             id="analysis"
             position={fen}
             boardOrientation={orientation}
             boardWidth={boardWidth}
             animationDuration={150}
-            customBoardStyle={{ margin:'0 auto', overflow:'visible' as any }}
-            customArrows={arrows}
+            customBoardStyle={{ borderRadius: 4, overflow: 'hidden' }}
+            customArrows={arrows as any}
             customSquareStyles={mergedSquareStyles}
             onPieceDrop={onPieceDrop}
             onSquareClick={handleSquareClick}
           />
 
-          {/* Badge overlay (non-interactive so it never blocks clicks) */}
+          {/* Move quality badge */}
           {badgePos && (
-            <div
-              style={{
-                position: 'absolute',
-                left: badgePos.left,
-                top:  badgePos.top,
-                width: badgeSize,
-                height: badgeSize,
-                pointerEvents: 'auto',
-              }}
-            >
+            <div style={{ position: 'absolute', left: badgePos.left, top: badgePos.top, width: badgeSize, height: badgeSize, pointerEvents: 'auto' }}>
               <RenderBadge tag={overlayTag} size={badgeSize} />
             </div>
           )}
 
-          {coachMomentNote ? (
-            <div
-              style={{
-                position: 'absolute',
-                top: Math.max(12, boardWidth * 0.08),
-                ...coachOverlayPositionStyle,
-                width: coachOverlayWidth,
-                background: 'rgba(15,23,42,0.96)',
-                border: '1px solid rgba(59,130,246,0.4)',
-                borderRadius: 12,
-                padding: '12px 14px',
-                color: '#e2e8f0',
-                fontSize: 15,
-                lineHeight: '22px',
-                boxShadow: '0 12px 28px rgba(0,0,0,0.35)',
-                pointerEvents: 'none',
-                backdropFilter: 'blur(6px)',
-                zIndex: 5,
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: 14, marginBottom: 6 }}>
-                <span>{`Move ${coachMomentNote.moveNo}${coachMomentNote.side === 'B' ? '…' : '.'} ${coachMomentNote.san || '?'}`}</span>
-                {coachMomentNote.label ? <TagBadge tag={coachMomentNote.label} size={18} /> : null}
-              </div>
-              <div style={{ whiteSpace: 'normal' }}>{clampSentences(coachMomentNote.why, 2)}</div>
+          {/* Coach overlay */}
+          {(coachMomentNote || coachMoveNote) && (
+            <div style={{
+              position: 'absolute',
+              top: Math.max(12, boardWidth * 0.08),
+              ...coachOverlayPositionStyle,
+              width: coachOverlayWidth,
+              background: 'rgba(10,10,10,0.95)',
+              border: '1px solid #2a2a2a',
+              borderRadius: 10,
+              padding: '10px 12px',
+              color: '#d0d0d0',
+              fontSize: 13,
+              lineHeight: '20px',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.5)',
+              pointerEvents: 'none',
+              zIndex: 5,
+            }}>
+              {coachMomentNote ? (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, fontSize: 12, marginBottom: 5, color: '#888' }}>
+                    <span>Move {coachMomentNote.moveNo}{coachMomentNote.side === 'B' ? '…' : '.'} {coachMomentNote.san || '?'}</span>
+                    {coachMomentNote.label ? <TagBadge tag={coachMomentNote.label as any} size={16} /> : null}
+                  </div>
+                  <div>{clampSentences(coachMomentNote.why, 2)}</div>
+                </>
+              ) : coachMoveNote ? (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontWeight: 600, fontSize: 12, marginBottom: 5, color: '#888' }}>
+                    <span>{coachMoveNote.bubbleTitle || `Move ${coachMoveNote.moveNo}`}</span>
+                    {coachMoveNote.tag ? <TagBadge tag={coachMoveNote.tag as any} size={16} /> : null}
+                  </div>
+                  <div>{coachMoveNote.text}</div>
+                </>
+              ) : null}
             </div>
-          ) : coachMoveNote ? (
-            <div
-              style={{
-                position: 'absolute',
-                top: Math.max(12, boardWidth * 0.08),
-                ...coachOverlayPositionStyle,
-                width: coachOverlayWidth,
-                background: 'rgba(15,23,42,0.96)',
-                border: '1px solid rgba(59,130,246,0.4)',
-                borderRadius: 12,
-                padding: '12px 14px',
-                color: '#e2e8f0',
-                fontSize: 15,
-                lineHeight: '22px',
-                boxShadow: '0 12px 28px rgba(0,0,0,0.35)',
-                pointerEvents: 'none',
-                backdropFilter: 'blur(6px)',
-                zIndex: 5,
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 600, fontSize: 14, marginBottom: 6 }}>
-                <span>{coachMoveNote.bubbleTitle || `Coach on move ${coachMoveNote.moveNo}${coachMoveNote.side === 'B' ? '…' : '.'} ${coachMoveNote.san || '?'}`}</span>
-                {coachMoveNote.tag ? <TagBadge tag={coachMoveNote.tag} size={18} /> : null}
-              </div>
-              <div style={{ whiteSpace: 'normal' }}>{coachMoveNote.text}</div>
-            </div>
-          ) : null}
-
-        </div>
-
-        {/* RIGHT: eval bar column — matches board height (floats to the right of the centered board) */}
-        <div style={{ position:'absolute', left: boardWidth + 18, top: 0, display:'flex', flexDirection:'column', alignItems:'center', gap:10, minWidth: evalColWidth }}>
-          <div style={{
-            display:'flex',
-            alignItems:'flex-start',
-            justifyContent:'flex-start',
-            height: boardWidth, // align column height to board
-            minWidth: evalColWidth,
-          }}>
-            <EvalBar cp={evalCpDisplay} pending={Boolean(evalPending)} height={evalBarHeight} />
-          </div>
+          )}
         </div>
       </div>
 
-      {/* Optional sparkline under the board */}
-      {props.showEvalGraph !== false && evalSeries && evalSeries.length > 0 ? (
-        <div style={{ width: sparklineWidth, padding:12, border:'1px solid #3a3a3a', borderRadius:12, alignSelf:'center', marginLeft: graphOffset, marginRight: graphOffset }}>
-          <EvalSparkline series={evalSeries} height={138} onClickIndex={(i)=>props.onRebuildTo(i+1)} />
-        </div>
-      ) : null}
-
-      {/* Controls at the bottom of the column */}
-      <div style={{ ...ui.col, width: boardWidth, gap: 12, marginTop: 6 }}>
-        {outcomeText ? (
-          <div style={{ fontSize: 15, padding: '10px 12px', borderRadius: 10, background: '#1f2a37', color: '#e5e7eb', border: '1px solid #334155', animation: 'popFade 0.7s ease' }}>
-            {outcomeText}
-          </div>
-        ) : null}
-
-        <div style={{ width: '100%', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: 12 }}>
-          <div style={{ padding:'12px 14px', borderRadius: 12, border:'1px solid #1f2a3a', background:'#0c111b', boxShadow:'0 10px 26px rgba(0,0,0,.35)', display:'flex', flexDirection:'column', gap:10, minHeight: 0 }}>
-            <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', gap:12, flexWrap:'wrap' }}>
-              <div style={{ display:'flex', alignItems:'center', gap:10, flexWrap:'wrap' }}>
-                <span style={{ ...ui.pill, background:'#0f172a', borderColor:'#203046' }}>
-                  <Icon name="clock" size={18} />
-                  Time
-                </span>
-                <select
-                  value={timeControlMinutes ?? 10}
-                  onChange={(e) => onTimeControlChange?.(Number(e.target.value) || 10)}
-                  style={ui.select}
-                  disabled={isGameOver}
-                >
-                  {[3,5,10,15,30].map((m) => <option key={m} value={m}>{m} min</option>)}
-                </select>
-              </div>
-              <button
-                style={btnStyle(isGameOver || clockRunning)}
-                onClick={onBeginMatch}
-                disabled={isGameOver || clockRunning}
-              >
-                <Icon name="play" size={18} />
-                {matchStarted ? 'Resume' : 'Begin'}
-              </button>
-            </div>
-            <div style={{ display:'flex', gap: 10, flexWrap:'wrap' }}>
-              <div style={{ ...ui.pill, background:'#0d1726', borderStyle:'dashed', borderColor:'#203046', color:'#9fb4d2' }}>
-                <Icon name={clockRunning ? 'play' : 'clock'} size={18} />
-                {clockRunning ? 'Clock running' : (matchStarted ? 'Paused' : 'Not started')}
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div style={ui.controlGrid}>
-          <button style={btnStyle(ply === 0)} onClick={() => onRebuildTo(0)} disabled={ply === 0}><Icon name="rewind" size={22} />First</button>
-          <button style={btnStyle(ply === 0)} onClick={() => onRebuildTo(Math.max(0, ply - 1))} disabled={ply === 0}><Icon name="back" size={22} />Back</button>
-          <button style={btnStyle(ply >= movesUci.length)} onClick={() => onRebuildTo(Math.min(movesUci.length, ply + 1))} disabled={ply >= movesUci.length}><Icon name="forward" size={22} />Forward</button>
-          <button style={btnStyle(ply >= movesUci.length)} onClick={() => onRebuildTo(movesUci.length)} disabled={ply >= movesUci.length}><Icon name="end" size={22} />End</button>
-          <button style={btnStyle(false)} onClick={onNewGame}><Icon name="plus" size={22} />New</button>
-        </div>
-
-        <div style={ui.controlGrid}>
-          <button style={btnStyle(engineBusy || isGameOver)} onClick={onEngineMove} disabled={engineBusy || isGameOver}><Icon name="cpu" size={22} />Engine Move</button>
-          <button style={btnStyle(isGameOver || !onOfferDraw)} onClick={() => onOfferDraw?.()} disabled={isGameOver || !onOfferDraw}><Icon name="handshake" size={22} />Offer Draw</button>
-          <button style={btnStyle(isGameOver || !onResign)} onClick={onResign} disabled={isGameOver || !onResign}><Icon name="flag" size={22} />Resign</button>
-          <label style={{ ...ui.toggle, opacity: isGameOver ? 0.55 : 1, cursor: isGameOver ? 'not-allowed' : 'pointer' }}>
-            <input type="checkbox" checked={autoReply} onChange={e => setAutoReply(e.target.checked)} disabled={isGameOver} style={{ accentColor:'#22c55e' }} />
-            <Icon name="repeat" size={22} />
-            Auto reply
-          </label>
-          <button
-            style={btnStyle(engineBusy || !onOrientationChange || isGameOver)}
-            onClick={() => {
-              onOrientationChange?.('black');
-              if (ply === 0) onEngineMove();
-            }}
-            disabled={engineBusy || !onOrientationChange || isGameOver}
-            title="Flip to Black and, if at start, let engine make the first move"
-          >
-            <Icon name="knight" size={22} />
-            Play as Black
-          </button>
-          <button
-            style={{ ...ui.btnIcon, opacity: !onOrientationChange ? 0.55 : 1, cursor: !onOrientationChange ? 'not-allowed' : 'pointer' }}
-            onClick={() => onOrientationChange?.(orientation === 'white' ? 'black' : 'white')}
-            disabled={!onOrientationChange}
-            title="Flip board"
-            aria-label="Flip board"
-          >
-            <Icon name="flip" size={22} />
-          </button>
-        </div>
-        {engineError && (
-          <div style={{ marginTop: 8, color: '#fca5a5', fontSize: 14 }}>
-            Engine: {engineError}
-          </div>
-        )}
+      {/* Player badge (bottom) */}
+      <div style={{ width: boardWidth + EVAL_BAR_W + EVAL_GAP, marginTop: 6, paddingLeft: EVAL_BAR_W + EVAL_GAP }}>
+        <PlayerBadge side={bottomSide} name={bottomName} acc={bottomAcc} estElo={bottomElo} clockMs={bottomClock} />
       </div>
+
+      {/* Optional eval sparkline */}
+      {props.showEvalGraph !== false && evalSeries && evalSeries.length > 0 && (
+        <div style={{
+          width: boardWidth,
+          marginTop: 10,
+          marginLeft: EVAL_BAR_W + EVAL_GAP,
+          background: '#0d0d0d',
+          border: '1px solid #1a1a1a',
+          borderRadius: 8,
+        }}>
+          <EvalSparkline series={evalSeries} height={80} onClickIndex={(i) => props.onRebuildTo(i + 1)} />
+        </div>
+      )}
+
+      {/* Game outcome banner */}
+      {outcomeText && (
+        <div style={{
+          marginTop: 10,
+          padding: '8px 16px',
+          borderRadius: 8,
+          background: '#111',
+          border: '1px solid #2a2a2a',
+          color: '#e0e0e0',
+          fontSize: 13,
+          fontWeight: 600,
+          animation: 'popFade 0.5s ease',
+        }}>
+          {outcomeText}
+        </div>
+      )}
+
+      {/* Navigation controls */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 10, marginLeft: EVAL_BAR_W + EVAL_GAP }}>
+        <button style={iconBtn(ply === 0)} onClick={() => onRebuildTo(0)} disabled={ply === 0} title="First"><Icon name="rewind" size={16} /></button>
+        <button style={iconBtn(ply === 0)} onClick={() => onRebuildTo(Math.max(0, ply - 1))} disabled={ply === 0} title="Back"><Icon name="back" size={16} /></button>
+        <button style={iconBtn(ply >= movesUci.length)} onClick={() => onRebuildTo(Math.min(movesUci.length, ply + 1))} disabled={ply >= movesUci.length} title="Forward"><Icon name="forward" size={16} /></button>
+        <button style={iconBtn(ply >= movesUci.length)} onClick={() => onRebuildTo(movesUci.length)} disabled={ply >= movesUci.length} title="Last"><Icon name="end" size={16} /></button>
+        <div style={{ width: 1, height: 24, background: '#222', margin: '0 4px' }} />
+        <button style={iconBtn(false)} onClick={() => onOrientationChange?.(orientation === 'white' ? 'black' : 'white')} title="Flip board"><Icon name="flip" size={16} /></button>
+        <button style={iconBtn(false)} onClick={onNewGame} title="New game"><Icon name="plus" size={16} /></button>
+      </div>
+
+      {/* Game action controls */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap', justifyContent: 'center', marginLeft: EVAL_BAR_W + EVAL_GAP }}>
+        {/* Time + Begin */}
+        <select
+          value={timeControlMinutes ?? 10}
+          onChange={(e) => onTimeControlChange?.(Number(e.target.value) || 10)}
+          style={{
+            padding: '5px 8px', borderRadius: 7, background: '#111', color: '#888',
+            border: '1px solid #222', fontSize: 12, cursor: 'pointer',
+          }}
+          disabled={isGameOver}
+        >
+          {[3, 5, 10, 15, 30].map((m) => <option key={m} value={m}>{m}m</option>)}
+        </select>
+        <button style={textBtn(isGameOver || !!clockRunning, true)} onClick={onBeginMatch} disabled={isGameOver || !!clockRunning}>
+          <Icon name="play" size={14} />{matchStarted ? 'Resume' : 'Begin'}
+        </button>
+        <button style={textBtn(engineBusy || isGameOver)} onClick={onEngineMove} disabled={engineBusy || isGameOver}>
+          <Icon name="cpu" size={14} />Engine
+        </button>
+        <button
+          style={textBtn(engineBusy || !onOrientationChange || isGameOver)}
+          onClick={() => { onOrientationChange?.('black'); if (ply === 0) onEngineMove(); }}
+          disabled={engineBusy || !onOrientationChange || isGameOver}
+        >
+          <Icon name="knight" size={14} />Play as Black
+        </button>
+        <label style={{ ...textBtn(isGameOver), cursor: isGameOver ? 'not-allowed' : 'pointer' }}>
+          <input type="checkbox" checked={autoReply} onChange={e => setAutoReply(e.target.checked)} disabled={isGameOver} style={{ accentColor: '#4ade80', margin: 0 }} />
+          <Icon name="repeat" size={14} />Auto
+        </label>
+        <button style={textBtn(isGameOver || !onResign)} onClick={onResign} disabled={isGameOver || !onResign}>
+          <Icon name="flag" size={14} />Resign
+        </button>
+      </div>
+
+      {engineError && (
+        <div style={{ marginTop: 6, fontSize: 11, color: '#f87171' }}>Engine: {engineError}</div>
+      )}
     </div>
   );
 }

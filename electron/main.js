@@ -341,10 +341,6 @@ async function loadUI(win){
 
 // ---------- app bootstrap ----------
 async function createWindow(){
-   if (process.env.DEBUG_PROD === '1') {
-  mainWindow.webContents.openDevTools({ mode: 'detach' });
-}
-
   // Create + show window ASAP
   const iconResolved = resolveIcon(); // path or undefined
   mainWindow = new BrowserWindow({
@@ -361,6 +357,10 @@ async function createWindow(){
   });
 
   wireWebContentsLogging(mainWindow);
+
+  if (process.env.DEBUG_PROD === '1') {
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
+  }
 
   // Register IPC now so renderer can call immediately
   registerIpc();

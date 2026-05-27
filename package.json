@@ -13,7 +13,7 @@
   "license": "MIT",
   "scripts": {
     "dev:ui": "npm --prefix webui run dev",
-    "dev:app": "wait-on tcp:5173 && ELECTRON_START_URL=http://localhost:5173 electron --no-sandbox .",
+    "dev:app": "wait-on tcp:5173 && cross-env ELECTRON_START_URL=http://localhost:5173 electron --no-sandbox .",
     "dev": "run-p dev:ui dev:app",
     "build:ui": "npm --prefix webui run build",
     "start": "electron .",

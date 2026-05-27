@@ -16,7 +16,7 @@ const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 const TIMEOUT_MS = Number(process.env.COACH_TIMEOUT_MS || 60000);
 const AUTO_PULL = String(process.env.AUTO_PULL_COACH || '1') === '1';
 const COACH_KEEP_ALIVE = process.env.COACH_KEEP_ALIVE || '2m';
-const NUM_CTX = Number(process.env.COACH_NUM_CTX || 1536);
+const NUM_CTX = Number(process.env.COACH_NUM_CTX || 3072);
 const MAX_COACH_NOTES = Number(process.env.COACH_MAX_NOTES || '10');
 const SECTION_SCHEMA_TEXT = `{
   "executive": {"text": string},
@@ -49,16 +49,20 @@ const NOTE_SYSTEM_PROMPT = [
 ].join('\n');
 
 const SECTION_SYSTEM_PROMPT = [
-  'You are a Chess.com-style coach summarising a single game. Output JSON only.',
+  'You are an FM-strength chess coach writing a post-game summary for a student. Output ONLY valid JSON.',
   `Schema:\n${SECTION_SCHEMA_TEXT}`,
-  'Rules:',
-  '- Executive/Opening/Middlegame/Endgame texts must be <=2 sentences each.',
-  '- Each text must reference either a move number (e.g., "move 14") or the detected opening name.',
-  '- Use concrete anchors: mention plans, structures, or turning points—no generic filler or contradictions.',
-  '- Key moments require exactly 3 bullets formatted "Move X: ... → Habit: ...".',
-  '- Lessons require exactly 3 bullets formatted "Pattern: ... → Fix: ...".',
-  '- Do not list multiple alternative moves unless a PV line is provided; otherwise suggest a plan.',
-  '- Never include evaluation numbers, centipawns, or engine jargon.',
+  'ANALYTICAL FRAMEWORK — every section must apply these lenses:',
+  '- Opening: Did both players follow sound development principles? Was the center contested early? Were any opening mistakes punished immediately?',
+  '- Middlegame: Which player had the initiative? Were there missed tactical shots (forks, pins, back-rank threats)? Were piece outposts used or missed?',
+  '- Endgame: Was king activity prioritized? Were passed pawns advanced or blockaded correctly? Were any technique errors made converting a winning endgame?',
+  'RULES:',
+  '- Executive/Opening/Middlegame/Endgame texts: ≤2 sentences each.',
+  '- Each text MUST reference either a move number (e.g., "move 14") or the opening name.',
+  '- Name SPECIFIC structural or tactical features: e.g., "the isolated d-pawn", "the open f-file", "the outpost on d5".',
+  '- Never use vague phrases: "played well", "solid game", "interesting position" without concrete follow-up.',
+  '- Key moments: exactly 3 bullets formatted "Move X: [what happened and why it mattered] → Habit: [≤10-word habit]".',
+  '- Lessons: exactly 3 bullets formatted "Pattern: [the recurring problem] → Fix: [concrete corrective action]".',
+  '- Never include centipawn numbers or engine jargon.',
 ].join('\n');
 
 function log(...args) { if (COACH_DEBUG) console.log('[coach]', ...args); }
@@ -72,6 +76,146 @@ if (!_fetch) {
 
 function fmt(n) { return Number.isFinite(n) ? Math.round(n) : '-'; }
 function fmtPercent(n) { return Number.isFinite(n) ? `${Math.round(n)}%` : '—'; }
+
+/* ----------------------- FEN Position Analyser ---------------------------- */
+// Converts a FEN string into a concise English position description that a
+// small LLM can reason about without needing to parse algebraic notation.
+
+const PIECE_NAMES = { p: 'pawn', n: 'knight', b: 'bishop', r: 'rook', q: 'queen', k: 'king' };
+const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+
+function fenRankToSquares(rankStr, rankNum) {
+  const squares = [];
+  let file = 0;
+  for (const ch of rankStr) {
+    const n = parseInt(ch, 10);
+    if (!isNaN(n)) { file += n; }
+    else {
+      squares.push({ file, rank: rankNum, piece: ch });
+      file++;
+    }
+  }
+  return squares;
+}
+
+function parseFenPieces(boardStr) {
+  const ranks = boardStr.split('/');
+  const pieces = [];
+  for (let r = 0; r < 8; r++) {
+    const rankNum = 8 - r; // rank 8 is index 0
+    const squares = fenRankToSquares(ranks[r] || '', rankNum);
+    for (const s of squares) {
+      pieces.push({ ...s, color: s.piece === s.piece.toUpperCase() ? 'w' : 'b', type: s.piece.toLowerCase() });
+    }
+  }
+  return pieces;
+}
+
+function describePositionFeatures(fen, side) {
+  if (!fen || typeof fen !== 'string') return null;
+  const parts = fen.trim().split(/\s+/);
+  if (parts.length < 2) return null;
+  const boardStr = parts[0];
+  const sideToMove = parts[1] || 'w';
+  const pieces = parseFenPieces(boardStr);
+
+  // Material count
+  const mat = { w: {}, b: {} };
+  for (const p of pieces) {
+    if (p.type === 'k') continue;
+    mat[p.color][p.type] = (mat[p.color][p.type] || 0) + 1;
+  }
+  const matVal = { p: 1, n: 3, b: 3, r: 5, q: 9 };
+  const wTotal = Object.entries(mat.w).reduce((s, [t, c]) => s + (matVal[t] || 0) * c, 0);
+  const bTotal = Object.entries(mat.b).reduce((s, [t, c]) => s + (matVal[t] || 0) * c, 0);
+  const matDiff = wTotal - bTotal;
+  const matLine = matDiff === 0 ? 'Material is equal.' :
+    matDiff > 0 ? `White is up ~${matDiff} material point${matDiff !== 1 ? 's' : ''}.` :
+      `Black is up ~${Math.abs(matDiff)} material point${Math.abs(matDiff) !== 1 ? 's' : ''}.`;
+
+  // King position
+  const wKing = pieces.find(p => p.type === 'k' && p.color === 'w');
+  const bKing = pieces.find(p => p.type === 'k' && p.color === 'b');
+  function kingDesc(king, color) {
+    if (!king) return `${color} king location unknown`;
+    const file = FILES[king.file] || '?';
+    const rank = king.rank;
+    if (color === 'White') {
+      if (king.file >= 6) return 'White king is castled kingside (g/h-file)';
+      if (king.file <= 1) return 'White king is castled queenside (a/b-file)';
+      if (rank === 1) return 'White king is uncastled in the center';
+      return `White king is on ${file}${rank}`;
+    } else {
+      if (king.file >= 6) return 'Black king is castled kingside (g/h-file)';
+      if (king.file <= 1) return 'Black king is castled queenside (a/b-file)';
+      if (rank === 8) return 'Black king is uncastled in the center';
+      return `Black king is on ${file}${rank}`;
+    }
+  }
+  const kingLine = `${kingDesc(wKing, 'White')}. ${kingDesc(bKing, 'Black')}.`;
+
+  // Open/semi-open files (no pawns)
+  const openFiles = [];
+  const semiOpenW = []; // no White pawn
+  const semiOpenB = []; // no Black pawn
+  for (let f = 0; f < 8; f++) {
+    const wPawns = pieces.filter(p => p.type === 'p' && p.color === 'w' && p.file === f).length;
+    const bPawns = pieces.filter(p => p.type === 'p' && p.color === 'b' && p.file === f).length;
+    if (!wPawns && !bPawns) openFiles.push(FILES[f]);
+    else if (!wPawns) semiOpenW.push(FILES[f]);
+    else if (!bPawns) semiOpenB.push(FILES[f]);
+  }
+  const fileLine = openFiles.length
+    ? `Open file${openFiles.length > 1 ? 's' : ''}: ${openFiles.join(', ')}.`
+    : 'No fully open files.';
+  const semiLine = [
+    semiOpenW.length ? `Semi-open for White: ${semiOpenW.join(', ')}.` : '',
+    semiOpenB.length ? `Semi-open for Black: ${semiOpenB.join(', ')}.` : '',
+  ].filter(Boolean).join(' ');
+
+  // Pawn structure: doubled, isolated, passed
+  const pawnStructure = [];
+  for (let f = 0; f < 8; f++) {
+    const wCount = pieces.filter(p => p.type === 'p' && p.color === 'w' && p.file === f).length;
+    const bCount = pieces.filter(p => p.type === 'p' && p.color === 'b' && p.file === f).length;
+    if (wCount > 1) pawnStructure.push(`White doubled pawns on ${FILES[f]}-file`);
+    if (bCount > 1) pawnStructure.push(`Black doubled pawns on ${FILES[f]}-file`);
+  }
+  // Isolated pawns (no friendly pawn on adjacent files)
+  for (let f = 0; f < 8; f++) {
+    const wHere = pieces.filter(p => p.type === 'p' && p.color === 'w' && p.file === f).length;
+    const wLeft = pieces.filter(p => p.type === 'p' && p.color === 'w' && p.file === f - 1).length;
+    const wRight = pieces.filter(p => p.type === 'p' && p.color === 'w' && p.file === f + 1).length;
+    if (wHere && !wLeft && !wRight) pawnStructure.push(`White isolated pawn on ${FILES[f]}-file`);
+    const bHere = pieces.filter(p => p.type === 'p' && p.color === 'b' && p.file === f).length;
+    const bLeft = pieces.filter(p => p.type === 'p' && p.color === 'b' && p.file === f - 1).length;
+    const bRight = pieces.filter(p => p.type === 'p' && p.color === 'b' && p.file === f + 1).length;
+    if (bHere && !bLeft && !bRight) pawnStructure.push(`Black isolated pawn on ${FILES[f]}-file`);
+  }
+
+  // Piece activity: bishops vs knights, rooks on open files
+  const wBishops = pieces.filter(p => p.type === 'b' && p.color === 'w').length;
+  const bBishops = pieces.filter(p => p.type === 'b' && p.color === 'b').length;
+  const pieceLine = wBishops === 2 && bBishops < 2 ? 'White has the bishop pair.' :
+    bBishops === 2 && wBishops < 2 ? 'Black has the bishop pair.' : '';
+
+  // Center control (pawns on d4/d5/e4/e5)
+  const centerSquares = [
+    { file: 3, rank: 4 }, { file: 3, rank: 5 },
+    { file: 4, rank: 4 }, { file: 4, rank: 5 },
+  ];
+  const wCenter = pieces.filter(p => p.type === 'p' && p.color === 'w' && centerSquares.some(sq => sq.file === p.file && sq.rank === p.rank)).length;
+  const bCenter = pieces.filter(p => p.type === 'p' && p.color === 'b' && centerSquares.some(sq => sq.file === p.file && sq.rank === p.rank)).length;
+  const centerLine = wCenter > bCenter ? 'White controls the center with more central pawns.' :
+    bCenter > wCenter ? 'Black controls the center with more central pawns.' :
+      'Center pawn tension is balanced.';
+
+  const lines = [matLine, kingLine, centerLine, fileLine];
+  if (semiLine) lines.push(semiLine);
+  if (pawnStructure.length) lines.push(pawnStructure.slice(0, 3).join('; ') + '.');
+  if (pieceLine) lines.push(pieceLine);
+  return lines.filter(Boolean).join(' ');
+}
 
 function describePhaseFocus(totalPlies) {
   if (!Number.isFinite(totalPlies) || totalPlies <= 0) return 'balanced middlegame';
@@ -418,6 +562,37 @@ function normalizeMomentLabel(tagRaw) {
   return 'Good';
 }
 
+// Produces a single readable coaching sentence from mechanical data — used when LLM is unavailable.
+function buildFallbackInsight(moment) {
+  const label = normalizeMomentLabel(moment.tag);
+  const san = moment.san || '(?)';
+  const best = moment.best || moment.bestSan || '';
+  const before = moment.evalBeforeLabel || '';
+  const after = moment.evalAfterLabel || '';
+  const deltaCp = Math.abs(Number(moment.deltaCp || 0));
+  const side = (moment.side === 'B' || moment.side === 'Black') ? 'Black' : 'White';
+
+  if (label === 'Blunder') {
+    const shift = before && after ? ` — position goes from ${before} to ${after}` : '';
+    const fix = best ? `; ${best} was necessary` : '';
+    return `${side} played ${san}${shift}${fix}.`;
+  }
+  if (label === 'Mistake') {
+    const shift = before && after ? `, shifting from ${before} to ${after}` : '';
+    const fix = best ? `; ${best} held the advantage` : '';
+    return `${san} was a mistake${shift}${fix}.`;
+  }
+  if (label === 'Inaccuracy') {
+    const fix = best ? `; ${best} was slightly more accurate` : '';
+    return `${san} was slightly imprecise${fix}.`;
+  }
+  if (label === 'Best') {
+    const context = before && after && before !== after ? ` improving from ${before} to ${after}` : '';
+    return `${san} was the best move available${context}.`;
+  }
+  return `${san} kept the position ${after || before || 'stable'}.`;
+}
+
 function describeEvalShift(moment) {
   const before = moment?.evalBeforeLabel || null;
   const after = moment?.evalAfterLabel || null;
@@ -465,51 +640,76 @@ function selectKeyMoments(momentsInput = []) {
 }
 
 function buildMomentPromptBlock(moment) {
+  const side = moment.side === 'B' || moment.side === 'Black' ? 'Black' : 'White';
+  const posBefore = describePositionFeatures(moment.fenBefore, side);
+  const posAfter = describePositionFeatures(moment.fenAfter, side);
   const base = {
     moveIndex: moment.index,
     moveNo: moment.moveNo,
-    side: moment.side === 'B' || moment.side === 'Black' ? 'Black' : 'White',
+    side,
     san: moment.san,
     tagHint: normalizeMomentLabel(moment.tag),
     evalBeforeLabel: moment.evalBeforeLabel || '',
     evalAfterLabel: moment.evalAfterLabel || '',
-    deltaCp: Number.isFinite(moment.deltaCp) ? Number(moment.deltaCp) : null,
     phase: moment.phase || 'middlegame',
-    tacticSummary: moment.tacticSummary || '',
-    positionSummary: moment.positionSummary || '',
+    positionBeforeMove: posBefore || moment.positionSummary || '',
+    positionAfterMove: posAfter || '',
     kingSafety: moment.kingSafety || '',
     centerSummary: moment.centerSummary || '',
-    structureTag: moment.structureTag || '',
-    motifs: Array.isArray(moment.motifs) ? moment.motifs : [],
-    bestSan: moment.best || moment.bestSan || '',
-    fenBefore: moment.fenBefore || '',
-    fenAfter: moment.fenAfter || '',
+    pawnStructureNotes: moment.structureTag || '',
+    tacticMotifs: Array.isArray(moment.motifs) ? moment.motifs : [],
+    engineBestMove: moment.best || moment.bestSan || '',
+    engineLine: moment.pv || '',
+    tacticSummary: moment.tacticSummary || '',
   };
   return JSON.stringify(base, null, 2);
 }
 
 const MOMENT_NOTE_SYSTEM_PROMPT = [
-  'You are a titled chess coach producing concise explanations for key moves.',
-  'Respond ONLY with JSON.',
-  'Use labels: Best (creates a threat or maintains initiative), Good (solid play), Inaccuracy (soft move), Mistake (serious error), Blunder (decisive error), Book (theory).',
-  'Explain why using concrete positional facts (king safety, center tension, open files, hanging pieces, tactics).',
-  'Mention evaluation labels provided (equal, slight edge, clear edge, winning, decisive) rather than numeric scores.',
-  'When data is missing (e.g., no engine line), say "engine line unavailable" instead of inventing specifics.',
-  'The "principle" field must be a short habit (≤12 words).',
+  'You are an FM-strength chess coach. Write one razor-sharp insight per move — like a titled player talking to a student.',
+  'Respond ONLY with a JSON array. No markdown, no code fences, no text outside the array.',
+  '',
+  'THE INSIGHT RULE (most important):',
+  '  "insight" must be exactly 1 sentence, ≤ 25 words, that names the single most important chess truth about this moment.',
+  '  It must cite a concrete positional or tactical fact: a specific square, piece, file, pawn weakness, or king shelter.',
+  '  BANNED phrases: "keeps balance", "solid move", "good development", "maintains the position", "keeps things equal".',
+  '  GOOD examples:',
+  '    Blunder: "Missing Nxe5 drops a full piece because the knight on e5 has no defender after the queen moves."',
+  '    Mistake: "Castling queenside walks the king into the open a-file White just created with a4-a5."',
+  '    Good: "Rd1 seizes the only open file and prevents Black from ever activating his rook."',
+  '    Best: "Nd5 exploits the outpost created by Black\'s ...c6, where it cannot be challenged by a pawn."',
+  '',
+  'WHEN TAG IS Inaccuracy/Mistake/Blunder — required:',
+  '  "betterMove": the specific SAN move that was stronger.',
+  '  "betterMoveIdea": 1 sentence explaining concretely why it is better (cite structure, king safety, tactics, initiative).',
+  '',
+  'OTHER FIELDS:',
+  '  "tacticalTheme": fork | pin | skewer | discovered-attack | double-check | back-rank | overload | deflection | zwischenzug | mating-net | pawn-break | outpost | open-file | none',
+  '  "keySquare": the single most important square (e.g. "d5"). Always include.',
+  '  "opponentBestResponse": 1 sentence — what should the opponent play next and why?',
+  '  "principle": ≤ 12-word actionable habit the student should internalize.',
 ].join('\n');
 
 function buildMomentNotesPrompt(targets) {
-  const lines = targets.map((moment, idx) => `Moment ${idx + 1}:\n${buildMomentPromptBlock(moment)}`);
+  const lines = targets.map((moment, idx) => `=== Moment ${idx + 1} ===\n${buildMomentPromptBlock(moment)}`);
   return [
-    'For each moment below, produce an object with keys:',
-    '{ "moveIndex","moveNo","side","san","label","why","opponentIdea","refutation","betterPlan","principle","pv" }',
-    '- "why": 2–4 sentences describing the intention, what changed, and consequences.',
-    '- "opponentIdea": describe how the opponent can punish or respond (if known).',
-    '- "refutation": reference the best line or say "engine line unavailable".',
-    '- "betterPlan": suggest one plan-level alternative.',
-    '- "principle": short habit reminder (≤12 words).',
-    '- "pv": short SAN line if provided, else empty string.',
-    'Return ONLY a JSON array of these objects.',
+    'Return a JSON array — one object per moment below. Each object has these keys:',
+    '  "moveIndex"            — integer, from input',
+    '  "moveNo"               — integer, from input',
+    '  "side"                 — "White" or "Black"',
+    '  "san"                  — move played, from input',
+    '  "label"                — Best | Good | Inaccuracy | Mistake | Blunder | Book',
+    '  "insight"              — 1 sentence ≤25 words naming the single chess truth about this moment.',
+    '                           Must cite a specific square, piece, file, weakness, or king shelter.',
+    '  "tacticalTheme"        — fork|pin|skewer|discovered-attack|double-check|back-rank|overload|deflection|zwischenzug|mating-net|pawn-break|outpost|open-file|none',
+    '  "keySquare"            — single most important square, e.g. "d5"',
+    '  "opponentBestResponse" — 1 sentence: opponent\'s best reply and why',
+    '  "betterMove"           — for Inaccuracy/Mistake/Blunder: the better SAN move. Empty string otherwise.',
+    '  "betterMoveIdea"       — for Inaccuracy/Mistake/Blunder: 1 sentence why it is better. Empty string otherwise.',
+    '  "principle"            — ≤12-word habit for the student',
+    '  "pv"                   — engine line from engineLine if provided, else ""',
+    '',
+    'RULES: Return ONLY the JSON array. No markdown. insight must NOT use banned phrases: "keeps balance", "solid", "maintains position", "good development".',
     '',
     lines.join('\n\n'),
   ].join('\n');
@@ -527,13 +727,27 @@ function normalizeMomentNote(raw, moment) {
   if (!Number.isFinite(moveIndex)) return null;
   const label = normalizeMomentLabel(raw.label || moment?.tag);
   if (!MOMENT_TAGS.has(label)) return null;
-  const why = clampField(raw.why || '', 600);
+
+  // "insight" is the primary field (new schema); "why" kept for backward compat
+  let whyText;
+  if (raw.insight && typeof raw.insight === 'string') {
+    whyText = raw.insight;
+  } else if (Array.isArray(raw.why)) {
+    whyText = raw.why.filter(s => typeof s === 'string' && s.trim()).join(' ');
+  } else {
+    whyText = raw.why || '';
+  }
+  const why = clampField(whyText, 300);
   if (!why) return null;
-  const opponentIdea = clampField(raw.opponentIdea || '', 240) || undefined;
-  const refutation = clampField(raw.refutation || '', 240) || undefined;
-  const betterPlan = clampField(raw.betterPlan || '', 240) || undefined;
+
+  const tacticalTheme = clampField(raw.tacticalTheme || '', 40) || undefined;
+  const keySquare = clampField(raw.keySquare || '', 10) || undefined;
+  const opponentBestResponse = clampField(raw.opponentBestResponse || raw.opponentIdea || '', 280) || undefined;
+  const betterMove = clampField(raw.betterMove || '', 20) || undefined;
+  const betterMoveIdea = clampField(raw.betterMoveIdea || raw.betterPlan || '', 280) || undefined;
   const principle = clampField(raw.principle || '', 80) || undefined;
   const pv = clampField(raw.pv || '', 200) || undefined;
+
   return {
     moveIndex,
     moveNo: Number.isFinite(raw.moveNo) ? Number(raw.moveNo) : moment?.moveNo ?? Math.floor(moveIndex / 2) + 1,
@@ -541,9 +755,11 @@ function normalizeMomentNote(raw, moment) {
     san: String(raw.san || moment?.san || '(?)'),
     label,
     why,
-    opponentIdea,
-    refutation,
-    betterPlan,
+    tacticalTheme,
+    keySquare,
+    opponentBestResponse,
+    betterMove: quietLabel(label) ? undefined : betterMove,
+    betterMoveIdea: quietLabel(label) ? undefined : betterMoveIdea,
     principle: quietLabel(label) ? undefined : principle,
     pv,
     evalBeforeLabel: moment?.evalBeforeLabel || null,
@@ -564,7 +780,7 @@ async function generateMomentNotes(inputs, model) {
       model,
       systemPrompt: MOMENT_NOTE_SYSTEM_PROMPT,
       prompt,
-      numPredict: 900,
+      numPredict: 1200,
     });
     const list = Array.isArray(raw) ? raw : Array.isArray(raw?.momentNotes) ? raw.momentNotes : [];
     const notes = [];
@@ -582,11 +798,13 @@ async function generateMomentNotes(inputs, model) {
         side: moment.side === 'B' || moment.side === 'Black' ? 'B' : 'W',
         san: moment.san || '(?)',
         label,
-        why: describeEvalShift(moment) || 'Coach note unavailable.',
-        opponentIdea: moment.tacticSummary || undefined,
-        refutation: 'engine line unavailable',
-        betterPlan: moment.best ? `Consider ${moment.best} instead.` : undefined,
-        principle: quietLabel(label) ? undefined : 'Stay alert for forcing moves',
+        why: buildFallbackInsight(moment),
+        tacticalTheme: undefined,
+        keySquare: undefined,
+        opponentBestResponse: undefined,
+        betterMove: quietLabel(label) ? undefined : (moment.best || undefined),
+        betterMoveIdea: quietLabel(label) ? undefined : (moment.best ? `${moment.best} maintains the advantage more cleanly.` : undefined),
+        principle: quietLabel(label) ? undefined : 'Check for forcing moves before committing.',
         pv: '',
         evalBeforeLabel: moment.evalBeforeLabel || null,
         evalAfterLabel: moment.evalAfterLabel || null,
@@ -599,21 +817,26 @@ async function generateMomentNotes(inputs, model) {
 }
 
 function fallbackMomentNotes(moments) {
-  return selectKeyMoments(moments).map((moment) => ({
-    moveIndex: moment.index,
-    moveNo: moment.moveNo,
-    side: moment.side === 'B' || moment.side === 'Black' ? 'B' : 'W',
-    san: moment.san || '(?)',
-    label: normalizeMomentLabel(moment.tag),
-    why: describeEvalShift(moment) || 'Coach offline.',
-    opponentIdea: moment.tacticSummary || undefined,
-    refutation: 'engine line unavailable',
-    betterPlan: moment.best ? `Consider ${moment.best}.` : undefined,
-    principle: quietLabel(normalizeMomentLabel(moment.tag)) ? undefined : 'Stay alert for forcing moves',
-    pv: '',
-    evalBeforeLabel: moment.evalBeforeLabel || null,
-    evalAfterLabel: moment.evalAfterLabel || null,
-  }));
+  return selectKeyMoments(moments).map((moment) => {
+    const label = normalizeMomentLabel(moment.tag);
+    return {
+      moveIndex: moment.index,
+      moveNo: moment.moveNo,
+      side: moment.side === 'B' || moment.side === 'Black' ? 'B' : 'W',
+      san: moment.san || '(?)',
+      label,
+      why: buildFallbackInsight(moment),
+      tacticalTheme: undefined,
+      keySquare: undefined,
+      opponentBestResponse: undefined,
+      betterMove: quietLabel(label) ? undefined : (moment.best || undefined),
+      betterMoveIdea: quietLabel(label) ? undefined : (moment.best ? `${moment.best} maintains the advantage more cleanly.` : undefined),
+      principle: quietLabel(label) ? undefined : 'Check for forcing moves before committing.',
+      pv: '',
+      evalBeforeLabel: moment.evalBeforeLabel || null,
+      evalAfterLabel: moment.evalAfterLabel || null,
+    };
+  });
 }
 
 function normalizeSections(sections, inputs) {

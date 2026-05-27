@@ -7,8 +7,8 @@ export type Moment = {
   side: 'White' | 'Black';
   san: string;
   tag: 'Book' | 'Best' | 'Good' | 'Inaccuracy' | 'Mistake' | 'Blunder' | 'Review';
-  cpBefore?: number | null; // white POV (UI)
-  cpAfter?: number | null;  // white POV (UI)
+  cpBefore?: number | null;     // White POV
+  cpAfterWhite?: number | null; // White POV
   dWin?: number | null;     // optional ΔWin% if you calculate it
   best?: string | null;     // best UCI from MultiPV1
   pv?: string | null;       // optional SAN PV text
