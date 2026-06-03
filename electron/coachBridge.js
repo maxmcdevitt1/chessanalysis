@@ -67,12 +67,7 @@ const SECTION_SYSTEM_PROMPT = [
 
 function log(...args) { if (COACH_DEBUG) console.log('[coach]', ...args); }
 
-// Node18+ global fetch ok in Electron main; polyfill if you need older
-// (v18 ships fetch; keep a fallback for safety)
-let _fetch = global.fetch;
-if (!_fetch) {
-  try { _fetch = require('node-fetch'); } catch {}
-}
+const _fetch = globalThis.fetch;
 
 function fmt(n) { return Number.isFinite(n) ? Math.round(n) : '-'; }
 function fmtPercent(n) { return Number.isFinite(n) ? `${Math.round(n)}%` : '—'; }
@@ -1371,26 +1366,6 @@ function normalizeItems(items, batch) {
       };
     })
     .filter(Boolean);
-}
-
-function keySwingMoment(moments) {
-  const list = safeMoments(moments);
-  let best = null;
-  for (const m of list) {
-    const before = Number(m?.cpBefore);
-    const after = Number(m?.cpAfter);
-    if (!Number.isFinite(before) || !Number.isFinite(after)) continue;
-    const delta = after - before;
-    const absDelta = Math.abs(delta);
-    if (!best || absDelta > best.absDelta) {
-      best = {
-        ...m,
-        delta,
-        absDelta,
-      };
-    }
-  }
-  return best;
 }
 
 function describeTagReason(tagRaw, delta, phase, moverLabel) {

@@ -1,8 +1,0 @@
-{
-  "extends": "./webui/tsconfig.json",
-  "compilerOptions": {
-    "typeRoots": ["./webui/node_modules/@types", "./node_modules/@types"],
-    "types": ["react", "react-dom"]
-  },
-  "include": ["webui/src"]
-}

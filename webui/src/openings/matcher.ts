@@ -116,28 +116,11 @@ function buildTrie(rows: OpeningEntry[]) {
   }
 }
 
-// try to load from src bundle first, then public /eco.json
 async function loadAll(): Promise<void> {
   if (trieRoot) return;
 
   let rows: OpeningEntry[] = [];
 
-  const fetchEco = async (path: string, label: string) => {
-    try {
-      const res = await fetch(path);
-      if (res.ok) {
-        const j = await res.json();
-        if (Array.isArray(j) && j.length) {
-          rows = rows.concat(j as OpeningEntry[]);
-          if (import.meta.env.DEV) console.debug(`[openings] loaded from ${label}:`, j.length);
-        }
-      }
-    } catch {
-      // ignore
-    }
-  };
-
-  // 1) Bundled src/data/openings/eco.json if present
   try {
     const m: any = await import('../data/openings/eco.json');
     const arr = m?.default;
@@ -149,12 +132,8 @@ async function loadAll(): Promise<void> {
     // ignore — file may not exist
   }
 
-  // 2) Public /eco.json (primary) and /eco1.json (fuller list)
-  await fetchEco('/eco.json', '/eco.json');
-  await fetchEco('/eco1.json', '/eco1.json');
-
   if (!rows.length) {
-    console.warn('[openings] no usable openings data found (src nor /eco.json)');
+    console.warn('[openings] no usable bundled openings data found');
     trieRoot = { children: {} };
     return;
   }
