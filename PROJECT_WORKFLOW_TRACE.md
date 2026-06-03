@@ -381,3 +381,17 @@ Recorded engineering notes:
 - The visible Electron install failure also uses `cmd.exe /d /s /c node ...`, so this is not only an app script issue; dependency lifecycle scripts are affected too.
 - Repo-side mitigation chosen: remove root `postinstall` and make root/webui installs explicit in docs and GitHub Actions. This reduces nested install ambiguity but does not change `cmd.exe` UNC behavior.
 - User-side workaround: run from a normal Windows path, map the UNC path to a drive before running Windows npm, or run Linux npm inside WSL from the native `/home/...` path.
+
+### 2026-06-02 HST - Better/faster Windows run path
+
+User question:
+
+- Asked for a better/faster way to run the project on Windows without doing `npm install` from PowerShell.
+
+Recorded engineering notes:
+
+- Best no-install path is a packaged Windows executable/portable build from GitHub Releases once the Windows release workflow succeeds.
+- Best Windows development path is to keep the repository under a normal Windows filesystem path such as `C:\dev\chessanalysis`, run dependency install once, then reuse `node_modules` and run `npm run dev`.
+- Avoid running Windows Node/npm from `\\wsl.localhost\...`; that path triggers `cmd.exe` UNC fallback and breaks lifecycle scripts.
+- If staying inside WSL, run Linux Node/npm from the native WSL path (`/home/max/...`) rather than invoking Windows npm against a UNC path. This is better for Linux-side checks but less ideal for launching the Windows Electron desktop app.
+- With the root `postinstall` removed, installs should be explicit: root dependencies and `webui` dependencies are separate.
