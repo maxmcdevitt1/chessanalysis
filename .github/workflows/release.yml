@@ -26,8 +26,11 @@ jobs:
           node-version: 20
           cache: npm
 
-      - name: Install dependencies
+      - name: Install root dependencies
         run: npm install
+
+      - name: Install web UI dependencies
+        run: npm --prefix webui install
 
       # ---- Build per OS ----
       - name: Build Windows (NSIS + portable)

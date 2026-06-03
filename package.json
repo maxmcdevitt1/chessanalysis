@@ -17,8 +17,7 @@
     "dev": "run-p dev:ui dev:app",
     "build:ui": "npm --prefix webui run build",
     "start": "electron .",
-    "dist": "npm run build:ui && electron-builder -c electron-builder.yml",
-    "postinstall": "npm --prefix webui install"
+    "dist": "npm run build:ui && electron-builder -c electron-builder.yml"
   },
   "devDependencies": {
     "cross-env": "^7.0.3",

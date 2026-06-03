@@ -8,10 +8,13 @@ Install dependencies and start the full app:
 
 ```bash
 npm install
+npm --prefix webui install
 npm run dev
 ```
 
 `npm run dev` starts the Vite UI on port 5173 and then launches Electron with the IPC bridge enabled. Running only `npm run dev:ui` is useful for UI work, but engine and coach calls require Electron.
+
+On Windows, do not run Windows `npm` from a `\\wsl.localhost\...` UNC working directory. `cmd.exe` does not support UNC paths as the current directory, and Electron/npm lifecycle scripts can fail. Use a normal Windows path, map the UNC path to a drive first, or run Linux `npm` inside WSL from `/home/...`.
 
 ## Build
 

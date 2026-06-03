@@ -49,8 +49,8 @@ Root scripts:
 Install behavior:
 
 - Root `npm install` installs Electron/build tooling.
-- Root `postinstall` runs `npm --prefix webui install`.
-- The nested install is convenient locally, but it is also the most suspicious part of the Windows Actions failure because the workflow fails during `Install dependencies`, before any build step.
+- `npm --prefix webui install` installs renderer dependencies explicitly.
+- Root `postinstall` was removed after the UNC/npm failure screenshot so local and CI installs are easier to reason about.
 
 ## GitHub Release Workflow
 
@@ -96,7 +96,7 @@ Current release blocker:
 Recommended next diagnostic:
 
 - Use authenticated GitHub access or the GitHub UI while signed in to view the full Windows job log.
-- If the log confirms nested install/postinstall trouble, split CI install into explicit root and `webui` install steps and avoid relying on root `postinstall` inside Actions.
+- CI has been changed to split root and `webui` installs into explicit steps. Re-tag to validate whether this resolves the Windows install failure.
 
 ## Packaging Workflow
 
@@ -339,10 +339,10 @@ These local checks do not prove the GitHub Windows install because the failing A
    - Public page shows only the failing step and exit code.
    - GitHub API job-log download returned `403` without repository admin rights.
 
-3. Root `postinstall` may be too implicit for CI.
-   - It runs `npm --prefix webui install` inside root install.
-   - This makes the CI install step do two package installs inside one log section.
-   - Splitting root and webui installs in the workflow would make failures clearer and avoid nested install surprises.
+3. Root `postinstall` was removed after this finding.
+   - The workflow now installs root and `webui` dependencies in separate steps.
+   - This should make future CI install failures easier to locate.
+   - A fresh release tag is still needed to confirm the Windows runner behavior.
 
 4. Windows packaged engine binary is not tracked.
    - Windows package can be built, but runtime Stockfish availability depends on a bundled Windows binary, system install, or `STOCKFISH_PATH`.
@@ -359,8 +359,25 @@ These local checks do not prove the GitHub Windows install because the failing A
 ## Recommended Next Steps
 
 1. Inspect the authenticated Windows Actions log for run `26861897220`.
-2. Update `.github/workflows/release.yml` to install root and `webui` dependencies explicitly, for example by replacing the single `npm install` step with separate root/webui install steps.
-3. Consider removing root `postinstall` if CI and local docs can use explicit installs instead.
-4. Add or document a Windows Stockfish binary source before expecting packaged `.exe` runtime engine behavior.
-5. Decide whether full ECO coverage should be restored through one canonical file.
-6. Re-tag after the workflow fix, for example `v0.2.3`, because `v0.2.1` and `v0.2.2` already point to failed release attempts.
+2. Re-tag after the workflow install fix, for example `v0.2.3`, because `v0.2.1` and `v0.2.2` already point to failed release attempts.
+3. Add or document a Windows Stockfish binary source before expecting packaged `.exe` runtime engine behavior.
+4. Decide whether full ECO coverage should be restored through one canonical file.
+
+## Prompt Log
+
+### 2026-06-02 HST - UNC npm install failure screenshot
+
+User instruction:
+
+- Keep logging prompt-by-prompt project notes into this file.
+- Screenshot shows `npm install` being run from `\\wsl.localhost\Ubuntu\home\max\programming\chessanalysis-0.2.2\...` using Windows `cmd.exe`.
+
+Recorded engineering notes:
+
+- I will keep a running project log here after user prompts, focused on audit notes, decisions, commands, and findings. I will not record private chain-of-thought verbatim.
+- The screenshot failure is consistent with Windows `cmd.exe` not supporting UNC paths as the current directory: `CMD.EXE was started with the above path as the current directory. UNC paths are not supported. Defaulting to Windows directory.`
+- Once `cmd.exe` falls back to `C:\Windows`, npm lifecycle scripts can fail to find project-local commands and dependency install scripts can run from the wrong place.
+- The visible `'run-p' is not recognized` symptom is consistent with scripts being evaluated without the expected project-local `node_modules/.bin` context.
+- The visible Electron install failure also uses `cmd.exe /d /s /c node ...`, so this is not only an app script issue; dependency lifecycle scripts are affected too.
+- Repo-side mitigation chosen: remove root `postinstall` and make root/webui installs explicit in docs and GitHub Actions. This reduces nested install ambiguity but does not change `cmd.exe` UNC behavior.
+- User-side workaround: run from a normal Windows path, map the UNC path to a drive before running Windows npm, or run Linux npm inside WSL from the native `/home/...` path.
